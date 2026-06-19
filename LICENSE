@@ -1,0 +1,34 @@
+HULO Global Limited — Commercial Plugin Licence
+
+Copyright (c) 2026 HULO Global Limited. All rights reserved.
+
+This software is licensed, not sold, and is made available only to users
+who hold a valid, active subscription or perpetual licence purchased
+from HULO Global Limited.
+
+Permitted use:
+
+  1. The software may be installed and run on a single Vendure
+     instance per active subscription (or per perpetual licence). Each
+     licence is bound to one or more hostnames named at purchase time.
+
+  2. The source code is published only so that customers may audit it
+     for security review. Modification of the source for production use
+     is permitted, but redistribution of the modified source or of any
+     derivative work — in whole or in part — is not permitted.
+
+Prohibited use:
+
+  - Use without a valid, active licence key, except for non-production
+    evaluation under the plugin's "unlicensed mode" (which writes basic
+    delivery rows but disables the open/click endpoints).
+  - Use of the package to circumvent the licence verification routine,
+    or to extract or replace the embedded RSA public key.
+  - Resale, sublicensing, or distribution of the package outside of an
+    application that itself holds a valid HULO Vendure plugin licence.
+
+No warranty. To the maximum extent permitted by law, HULO Global Limited
+disclaims all warranties and all liability arising from use of this
+software.
+
+For commercial licensing enquiries: sales@eliteenterprisesoftware.com
