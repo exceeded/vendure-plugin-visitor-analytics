@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Param, Post, Put, Req, Res } from '@nest
 import { Ctx, Permission, RequestContext, TransactionalConnection } from '@vendure/core';
 import { Request, Response } from 'express';
 import { ConversionGoal } from './conversion-goal.entity';
-import { getOptions } from './plugin';
+import { VisitorAnalyticsPlugin, getOptions } from './plugin';
 import { VisitorEvent } from './visitor-event.entity';
 import { VisitorTrackingService } from './visitor-tracking.service';
 
@@ -636,6 +636,21 @@ export class VisitorTrackingController {
             if (k) out[k] = v;
         }
         return out;
+    }
+
+    /** Admin: plugin health + update availability. Read by the admin UI
+     * banner so the operator sees when a new version is on npm. */
+    @Get('visitors/status')
+    async status(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        const updater = VisitorAnalyticsPlugin.getUpdateChecker();
+        const update = updater ? updater.getStatus() : null;
+        return res.json({
+            packageName: VisitorAnalyticsPlugin.getPackageName(),
+            version: VisitorAnalyticsPlugin.getPackageVersion(),
+            update,
+            uptimeSec: Math.round(process.uptime()),
+        });
     }
 
     // ── Conversion goals ────────────────────────────────────────────────

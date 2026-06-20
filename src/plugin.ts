@@ -1,9 +1,13 @@
 import { PluginCommonModule, Type, VendurePlugin } from '@vendure/core';
-import { RevocationChecker, verifyLicence } from '@huloglobal/vendure-licence-sdk';
+import { RevocationChecker, UpdateChecker, verifyLicence } from '@huloglobal/vendure-licence-sdk';
 import { ConversionGoal } from './conversion-goal.entity';
 import { VisitorEvent } from './visitor-event.entity';
 import { VisitorTrackingService } from './visitor-tracking.service';
 import { VisitorTrackingController } from './visitor-tracking.controller';
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const PKG_VERSION: string = require('../package.json').version;
+const PKG_NAME = '@huloglobal/vendure-plugin-visitor-analytics';
 
 export interface VisitorAnalyticsPluginOptions {
     /** Public host of the Vendure server. Used in licence host-match. */
@@ -80,6 +84,11 @@ export function getOptions(): typeof DEFAULT_OPTIONS & VisitorAnalyticsPluginOpt
 })
 export class VisitorAnalyticsPlugin {
     private static revocation: RevocationChecker | null = null;
+    private static updateChecker: UpdateChecker | null = null;
+
+    static getUpdateChecker(): UpdateChecker | null { return VisitorAnalyticsPlugin.updateChecker; }
+    static getPackageVersion(): string { return PKG_VERSION; }
+    static getPackageName(): string { return PKG_NAME; }
 
     static init(options: VisitorAnalyticsPluginOptions): Type<VisitorAnalyticsPlugin> {
         cachedOptions = options;
@@ -87,6 +96,10 @@ export class VisitorAnalyticsPlugin {
         if (!VisitorAnalyticsPlugin.revocation) {
             VisitorAnalyticsPlugin.revocation = new RevocationChecker(REVOCATION_URL);
             VisitorAnalyticsPlugin.revocation.start();
+        }
+        if (!VisitorAnalyticsPlugin.updateChecker) {
+            VisitorAnalyticsPlugin.updateChecker = new UpdateChecker(PKG_NAME, PKG_VERSION);
+            VisitorAnalyticsPlugin.updateChecker.start();
         }
 
         const host = (options.publicBaseUrl || '')

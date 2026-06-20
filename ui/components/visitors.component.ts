@@ -57,6 +57,20 @@ interface VisitorProfile {
             </vdr-action-bar>
         </vdr-page-block>
 
+        <vdr-page-block *ngIf="updateBanner">
+            <div class="update-banner" [class.major]="updateBanner.isMajor">
+                <div>
+                    <strong>📦 Update available</strong>
+                    {{ updateBanner.packageName }} {{ updateBanner.current }} → <strong>{{ updateBanner.latest }}</strong>
+                    <span *ngIf="updateBanner.isMajor" class="major-pill">major</span>
+                </div>
+                <div class="actions">
+                    <a [href]="'https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v' + updateBanner.latest" target="_blank" class="btn btn-sm btn-link">Release notes ↗</a>
+                    <button class="btn btn-sm" (click)="dismissUpdate()">Dismiss</button>
+                </div>
+            </div>
+        </vdr-page-block>
+
         <vdr-page-block>
             <div class="summary-row">
                 <div class="summary-card live-card">
@@ -383,6 +397,36 @@ interface VisitorProfile {
     `,
     styles: [`
         :host { color: var(--color-text-100, inherit); display: block; }
+
+        .update-banner {
+            display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap;
+            padding: 12px 16px; border-radius: 8px;
+            background: #ecfeff; border: 1px solid #67e8f9;
+            color: #155e75; font-size: 13px;
+        }
+        .update-banner.major { background: #fef3c7; border-color: #fde68a; color: #92400e; }
+        .update-banner strong { font-weight: 700; }
+        .update-banner .major-pill { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 8px; background: #f59e0b; color: #fff; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+        .update-banner .actions { display: flex; gap: 8px; align-items: center; }
+
+        /* Mobile under 768px */
+        @media (max-width: 767px) {
+            .summary-row { gap: 8px; }
+            .summary-card { min-width: 0; flex-basis: calc(50% - 4px); padding: 12px 14px; }
+            .summary-card .num { font-size: 20px; }
+            .range { display: block; margin: 8px 0; }
+            .two-col { grid-template-columns: 1fr; }
+            .funnel-row { grid-template-columns: 1fr; gap: 4px; padding: 8px 0; border-bottom: 1px solid var(--color-component-border-200); }
+            table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap; }
+            .profile-grid, .profile-grid.four { grid-template-columns: 1fr 1fr; }
+            .drawer { width: 100% !important; max-width: 100% !important; }
+            .update-banner { flex-direction: column; align-items: flex-start; }
+            .update-banner .actions { width: 100%; justify-content: flex-end; }
+        }
+        @media (max-width: 380px) {
+            .summary-card { flex-basis: 100%; }
+        }
+
         .range { font-size: 12px; color: var(--color-component-color-300); margin-right: 8px; }
         .range .btn { padding: 2px 8px; min-width: 0; }
         .range .btn.active { font-weight: 700; color: var(--color-primary-500, #1d4ed8); }
@@ -537,6 +581,9 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     journey: JourneyEvent[] = [];
     profileLoading = false;
 
+    updateBanner: { packageName: string; current: string; latest: string; isMajor: boolean } | null = null;
+    private dismissKey = 'huloglobal-visitor-analytics-update-dismissed';
+
     constructor(
         private http: HttpClient,
         private notify: NotificationService,
@@ -547,6 +594,28 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     ngOnInit() {
         this.loadAll();
         this.connectLive();
+        this.loadStatus();
+    }
+
+    loadStatus() {
+        this.http.get<any>('/ees/visitors/status').subscribe({
+            next: (s) => {
+                const u = s?.update;
+                if (!u?.updateAvailable || !u.latest) return;
+                let dismissed = '';
+                try { dismissed = localStorage.getItem(this.dismissKey) || ''; } catch {}
+                if (dismissed === u.latest) return;
+                this.updateBanner = { packageName: u.packageName, current: u.current, latest: u.latest, isMajor: !!u.isMajor };
+                this.cdr.markForCheck();
+            },
+            error: () => { /* nice-to-have */ },
+        });
+    }
+
+    dismissUpdate() {
+        if (!this.updateBanner) return;
+        try { localStorage.setItem(this.dismissKey, this.updateBanner.latest); } catch {}
+        this.updateBanner = null;
     }
 
     ngOnDestroy() {
