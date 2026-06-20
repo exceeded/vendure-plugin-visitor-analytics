@@ -101,6 +101,56 @@ window.addEventListener('pagehide', () => {
 });
 ```
 
+## Custom events
+
+Fire a `recordEvent(type, meta?)` call from your storefront whenever a
+visitor does something interesting — add-to-cart, search, signup,
+quote-request — and the event shows up in the admin "Top events" table
+straight away.
+
+```ts
+function recordEvent(type, meta) {
+  navigator.sendBeacon(TRACK_URL, new Blob([JSON.stringify({
+    channelId: 1,
+    events: [{ type, url: location.pathname + location.search, meta }],
+  })], { type: 'application/json' }));
+}
+
+// Add to cart
+recordEvent('add_to_cart', { sku: 'WIN11-PRO', priceWithTax: 28900 });
+
+// Search query submitted
+recordEvent('search', { query: 'windows server 2022' });
+
+// Quote request from the contact form
+recordEvent('quote_request', { customerEmail });
+
+// Newsletter signup
+recordEvent('newsletter_signup', { source: 'footer' });
+```
+
+The full meta blob is persisted as JSON on the event row so you can
+slice on it later from the admin UI.
+
+## UTM attribution
+
+The plugin parses `utm_source` / `utm_medium` / `utm_campaign` /
+`utm_term` / `utm_content` from the URL of every incoming event and
+captures the referrer domain alongside. The admin "Traffic sources"
+table groups visitors by `(source, medium)` so you can see which
+campaigns convert.
+
+Drop `?utm_source=google&utm_medium=cpc&utm_campaign=spring24` onto any
+inbound link and it surfaces automatically — no extra config.
+
+## Live now widget
+
+The admin dashboard's top tile streams the currently-active visitor
+count + the URLs they're on in real time via Server-Sent Events
+(`GET /ees/visitors/live`). Updates every 5 seconds, reconnects
+automatically if the connection drops. Active = at least one event in
+the last 5 minutes.
+
 ## Init options
 
 | Option | Type | Required | Description |

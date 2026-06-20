@@ -60,21 +60,30 @@ export class VisitorTrackingService {
 
         const enriched = await this.enrichContext(input);
 
-        const rows = input.events.map(e => repo.create({
-            visitorId: input.visitorId,
-            sessionId: input.sessionId,
-            customerId: input.customerId,
-            channelId: input.channelId,
-            type: String(e.type || 'pageview').slice(0, 32),
-            url: (e.url || '').slice(0, 2048),
-            title: e.title ? String(e.title).slice(0, 500) : null,
-            referrer: e.referrer ? String(e.referrer).slice(0, 2048) : null,
-            timeOnPageMs: typeof e.timeOnPageMs === 'number' && e.timeOnPageMs >= 0
-                ? Math.min(e.timeOnPageMs, 60 * 60_000)
-                : null,
-            ...enriched,
-            meta: e.meta ? JSON.stringify(e.meta).slice(0, 4000) : null,
-        }));
+        const rows = input.events.map(e => {
+            const utm = parseUtm(e.url);
+            return repo.create({
+                visitorId: input.visitorId,
+                sessionId: input.sessionId,
+                customerId: input.customerId,
+                channelId: input.channelId,
+                type: String(e.type || 'pageview').slice(0, 32),
+                url: (e.url || '').slice(0, 2048),
+                title: e.title ? String(e.title).slice(0, 500) : null,
+                referrer: e.referrer ? String(e.referrer).slice(0, 2048) : null,
+                referrerDomain: extractReferrerDomain(e.referrer),
+                timeOnPageMs: typeof e.timeOnPageMs === 'number' && e.timeOnPageMs >= 0
+                    ? Math.min(e.timeOnPageMs, 60 * 60_000)
+                    : null,
+                ...enriched,
+                meta: e.meta ? JSON.stringify(e.meta).slice(0, 4000) : null,
+                utmSource: utm.source,
+                utmMedium: utm.medium,
+                utmCampaign: utm.campaign,
+                utmTerm: utm.term,
+                utmContent: utm.content,
+            });
+        });
 
         try {
             await repo.save(rows);
@@ -188,4 +197,56 @@ async function getMaxmindReader(): Promise<any | null> {
     await _maxmindInit;
     _maxmindInit = null;
     return _maxmindReader;
+}
+
+interface UtmFields {
+    source: string | null;
+    medium: string | null;
+    campaign: string | null;
+    term: string | null;
+    content: string | null;
+}
+
+/**
+ * Pull the five standard UTM parameters out of a relative path's query
+ * string. Returns nulls when no params are present. Capped to 200 chars
+ * each so a malformed referral URL can't blow out the column width.
+ */
+function parseUtm(rawUrl: string | undefined | null): UtmFields {
+    const empty = { source: null, medium: null, campaign: null, term: null, content: null };
+    if (!rawUrl) return empty;
+    const qIdx = rawUrl.indexOf('?');
+    if (qIdx === -1) return empty;
+    try {
+        const params = new URLSearchParams(rawUrl.slice(qIdx + 1));
+        const get = (k: string) => {
+            const v = params.get(k);
+            return v && v.length ? v.slice(0, 200) : null;
+        };
+        return {
+            source: get('utm_source'),
+            medium: get('utm_medium'),
+            campaign: get('utm_campaign'),
+            term: get('utm_term'),
+            content: get('utm_content'),
+        };
+    } catch {
+        return empty;
+    }
+}
+
+/**
+ * Pull the host out of a full referrer URL. Returns `null` for
+ * same-site direct hits (referrer empty or pointing back to the
+ * storefront — the controller decides that, this helper just normalises
+ * whatever it gets).
+ */
+function extractReferrerDomain(referrer: string | undefined | null): string | null {
+    if (!referrer) return null;
+    try {
+        const u = new URL(referrer);
+        return u.hostname ? u.hostname.toLowerCase().slice(0, 200) : null;
+    } catch {
+        return null;
+    }
 }

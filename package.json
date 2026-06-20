@@ -1,6 +1,6 @@
 {
     "name": "@hulo/vendure-plugin-visitor-analytics",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Full-funnel visitor analytics for Vendure storefronts — pageviews, time-on-page, session journey, exit pages, funnel drop-off, and per-visitor profile drawer with parsed user-agent + MaxMind GeoLite2 enrichment. Auto-issues visitor + session cookies on first request; logs guest and signed-in events against the same visitor id so the journey survives login.",
     "license": "SEE LICENSE IN LICENSE",
     "author": "Wayne Garrison <wayne@garrison.me.uk>",
@@ -11,7 +11,13 @@
     },
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
-    "files": ["dist", "ui", "README.md", "CHANGELOG.md", "LICENSE"],
+    "files": [
+        "dist",
+        "ui",
+        "README.md",
+        "CHANGELOG.md",
+        "LICENSE"
+    ],
     "scripts": {
         "build": "tsc -p tsconfig.json",
         "prepublishOnly": "yarn build"

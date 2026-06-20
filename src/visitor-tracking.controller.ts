@@ -159,6 +159,65 @@ export class VisitorTrackingController {
         });
     }
 
+    /** Traffic sources — UTM source breakdown + organic referrer
+     *  domains. Visitors are attributed by their first-pageview's UTM
+     *  / referrer combo per session. */
+    @Get('visitors/sources')
+    async sources(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        const days = clampInt((req.query as any).days, 30, 1, 365);
+        const take = clampInt((req.query as any).take, 25, 1, 500);
+        const skip = clampInt((req.query as any).skip, 0, 0, 1_000_000);
+
+        const rows = await this.connection.rawConnection.query(
+            `SELECT source, medium, COALESCE(MAX(campaign), '') AS campaign,
+                    COUNT(DISTINCT visitorId) AS visitors,
+                    COUNT(DISTINCT sessionId) AS sessions,
+                    SUM(reached_product) AS productViewers,
+                    SUM(reached_checkout) AS checkoutReached
+             FROM (
+                 SELECT visitorId, sessionId,
+                        COALESCE(utmSource, referrerDomain, '(direct)') AS source,
+                        COALESCE(utmMedium, IF(referrerDomain IS NOT NULL, 'referral', 'none')) AS medium,
+                        utmCampaign AS campaign,
+                        MAX(CASE WHEN url LIKE '/products/%' AND type='pageview' THEN 1 ELSE 0 END) AS reached_product,
+                        MAX(CASE WHEN (url LIKE '%/checkout%' OR url LIKE '%cart%') AND type='pageview' THEN 1 ELSE 0 END) AS reached_checkout
+                 FROM visitor_event
+                 WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
+                 GROUP BY visitorId, sessionId,
+                          COALESCE(utmSource, referrerDomain, '(direct)'),
+                          COALESCE(utmMedium, IF(referrerDomain IS NOT NULL, 'referral', 'none')),
+                          utmCampaign
+             ) by_session
+             GROUP BY source, medium
+             ORDER BY visitors DESC
+             LIMIT ? OFFSET ?`,
+            [days, take, skip],
+        );
+        const [{ total }] = await this.connection.rawConnection.query(
+            `SELECT COUNT(*) AS total FROM (
+                SELECT DISTINCT
+                    COALESCE(utmSource, referrerDomain, '(direct)') AS source,
+                    COALESCE(utmMedium, IF(referrerDomain IS NOT NULL, 'referral', 'none')) AS medium
+                FROM visitor_event
+                WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
+             ) sources`,
+            [days],
+        );
+        return res.json({
+            sources: rows.map((r: any) => ({
+                source: r.source,
+                medium: r.medium,
+                campaign: r.campaign,
+                visitors: Number(r.visitors) || 0,
+                sessions: Number(r.sessions) || 0,
+                productViewers: Number(r.productViewers) || 0,
+                checkoutReached: Number(r.checkoutReached) || 0,
+            })),
+            total: Number(total) || 0, take, skip,
+        });
+    }
+
     /** Top pages by view count. Paginated via take + skip. */
     @Get('visitors/top-pages')
     async topPages(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
@@ -261,6 +320,103 @@ export class VisitorTrackingController {
             })),
             total: Number(total) || 0, take, skip,
         });
+    }
+
+    /** Top custom events — `type` other than pageview / unload. Useful
+     *  for tracking add-to-cart / search / quote-request / signup
+     *  conversion rates. Paginated. */
+    @Get('visitors/top-events')
+    async topEvents(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        const days = clampInt((req.query as any).days, 30, 1, 365);
+        const take = clampInt((req.query as any).take, 25, 1, 500);
+        const skip = clampInt((req.query as any).skip, 0, 0, 1_000_000);
+        const rows = await this.connection.rawConnection.query(
+            `SELECT type,
+                    COUNT(*) AS count,
+                    COUNT(DISTINCT visitorId) AS uniqueVisitors,
+                    COUNT(DISTINCT sessionId) AS sessions
+             FROM visitor_event
+             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
+               AND type NOT IN ('pageview', 'unload')
+             GROUP BY type
+             ORDER BY count DESC
+             LIMIT ? OFFSET ?`,
+            [days, take, skip],
+        );
+        const [{ total }] = await this.connection.rawConnection.query(
+            `SELECT COUNT(DISTINCT type) AS total FROM visitor_event
+             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
+               AND type NOT IN ('pageview', 'unload')`,
+            [days],
+        );
+        return res.json({
+            events: rows.map((r: any) => ({
+                type: r.type,
+                count: Number(r.count) || 0,
+                uniqueVisitors: Number(r.uniqueVisitors) || 0,
+                sessions: Number(r.sessions) || 0,
+            })),
+            total: Number(total) || 0, take, skip,
+        });
+    }
+
+    /**
+     * Live-now widget — Server-Sent Events stream pushing the current
+     * active-visitor count + their most recent URLs every 5 seconds.
+     * "Active" = at least one event in the last 5 minutes. SSE keeps
+     * the connection open; the admin UI consumes it via `EventSource`.
+     *
+     * Each event payload:
+     *   data: { ts, activeCount, recent: [{ visitorId, url, country, secondsAgo }] }
+     */
+    @Get('visitors/live')
+    async live(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering
+        res.flushHeaders?.();
+
+        const tick = async () => {
+            try {
+                const rows = await this.connection.rawConnection.query(
+                    `SELECT visitorId,
+                            MAX(url) AS url,
+                            MAX(country) AS country,
+                            TIMESTAMPDIFF(SECOND, MAX(createdAt), NOW()) AS secondsAgo
+                     FROM visitor_event
+                     WHERE createdAt >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+                       AND type = 'pageview'
+                     GROUP BY visitorId
+                     ORDER BY MAX(createdAt) DESC
+                     LIMIT 20`,
+                );
+                const payload = {
+                    ts: new Date().toISOString(),
+                    activeCount: rows.length,
+                    recent: rows.map((r: any) => ({
+                        visitorId: r.visitorId,
+                        url: r.url,
+                        country: r.country,
+                        secondsAgo: Number(r.secondsAgo) || 0,
+                    })),
+                };
+                res.write(`data: ${JSON.stringify(payload)}\n\n`);
+            } catch {
+                // Don't kill the stream on transient DB errors — the next
+                // tick will retry. SSE clients reconnect automatically
+                // if the connection drops.
+            }
+        };
+
+        // Fire immediately, then every 5s. Stop when the client disconnects.
+        await tick();
+        const interval = setInterval(() => { tick().catch(() => undefined); }, 5_000);
+        req.on('close', () => clearInterval(interval));
+        req.on('end',   () => clearInterval(interval));
     }
 
     /** Journey timeline for one visitor — every event in order. */

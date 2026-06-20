@@ -109,4 +109,32 @@ export class VisitorEvent extends VendureEntity {
     /** Arbitrary JSON payload for `type='event'` rows. */
     @Column({ type: 'text', nullable: true })
     meta!: string | null;
+
+    // ── UTM attribution ──────────────────────────────────────────────────
+    // Captured server-side from the event URL on every pageview. When a
+    // visitor lands on `/products/?utm_source=google&utm_medium=cpc` these
+    // five columns are populated. The referrer domain is also captured
+    // so admin reports can group by source even when UTM params are
+    // absent.
+
+    @Column({ type: 'varchar', length: 100, nullable: true })
+    utmSource!: string | null;
+
+    @Column({ type: 'varchar', length: 100, nullable: true })
+    utmMedium!: string | null;
+
+    @Column({ type: 'varchar', length: 200, nullable: true })
+    utmCampaign!: string | null;
+
+    @Column({ type: 'varchar', length: 100, nullable: true })
+    utmTerm!: string | null;
+
+    @Column({ type: 'varchar', length: 200, nullable: true })
+    utmContent!: string | null;
+
+    /** Lowercased host of `referrer` (e.g. `google.com`, `facebook.com`).
+     *  Stored alongside the full referrer string so admin reports can
+     *  group by domain without parsing every URL at read time. */
+    @Column({ type: 'varchar', length: 200, nullable: true })
+    referrerDomain!: string | null;
 }
