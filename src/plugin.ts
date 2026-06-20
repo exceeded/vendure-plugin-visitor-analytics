@@ -1,5 +1,5 @@
 import { PluginCommonModule, Type, VendurePlugin } from '@vendure/core';
-import { RevocationChecker, UpdateChecker, verifyLicence } from '@huloglobal/vendure-licence-sdk';
+import { RetentionOptions, RevocationChecker, UpdateChecker, verifyLicence } from '@huloglobal/vendure-licence-sdk';
 import { ConversionGoal } from './conversion-goal.entity';
 import { VisitorEvent } from './visitor-event.entity';
 import { VisitorTrackingService } from './visitor-tracking.service';
@@ -34,6 +34,22 @@ export interface VisitorAnalyticsPluginOptions {
      *  ingested with `isBot=true`. Default false — keep bots so their
      *  share is visible on the dashboard. */
     dropBotEvents?: boolean;
+
+    // ── Security ────────────────────────────────────────────────────────
+    /** Rate limit per IP. Default 240 events / 60s. */
+    rateLimit?: { capacity: number; windowMs: number };
+    /** HMAC secret used to sign visitor + session cookies so tampered
+     *  values are rejected at the ingest endpoint. When unset, cookies
+     *  are not signed (legacy behaviour). Strongly recommend setting. */
+    signingSecret?: string;
+    /** Allowed CORS origins. When set, the `Access-Control-Allow-Origin`
+     *  reflection is restricted to this list. When empty (default), any
+     *  origin is reflected — matches legacy behaviour but is less safe. */
+    corsAllowedOrigins?: string[];
+
+    // ── Retention ───────────────────────────────────────────────────────
+    /** Auto-prune `visitor_event` rows older than `days` days. */
+    retention?: RetentionOptions;
 }
 
 const HULO_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
@@ -50,7 +66,7 @@ const PLUGIN_ID = 'vendure-plugin-visitor-analytics';
 const REVOCATION_URL = process.env.HULO_LICENCE_REVOCATION_URL
     || 'https://elite.charity/licence/revoked.json';
 
-const DEFAULT_OPTIONS: Required<Omit<VisitorAnalyticsPluginOptions, 'publicBaseUrl' | 'licenceKey'>> & { publicBaseUrl: string } = {
+const DEFAULT_OPTIONS: VisitorAnalyticsPluginOptions = {
     publicBaseUrl: 'http://localhost:3000',
     honorDoNotTrack: true,
     anonymizeIp: true,

@@ -1,4 +1,11 @@
-import { Body, Controller, Delete, Get, Param, Post, Put, Req, Res } from '@nestjs/common';
+import { Body, Controller, Delete, Get, OnApplicationBootstrap, OnModuleDestroy, Param, Post, Put, Req, Res } from '@nestjs/common';
+import {
+    applySecurityHeaders,
+    RateLimiter,
+    signValue,
+    startRetentionSweeper,
+    verifySignedValue,
+} from '@huloglobal/vendure-licence-sdk';
 import { Ctx, Permission, RequestContext, TransactionalConnection } from '@vendure/core';
 import { Request, Response } from 'express';
 import { ConversionGoal } from './conversion-goal.entity';
@@ -33,11 +40,44 @@ import { getRealIp, getResolvedCountry, getResolvedRegion } from './proxy-header
 function realIp(req: Request): string | null { return getRealIp(req); }
 
 @Controller('ees')
-export class VisitorTrackingController {
+export class VisitorTrackingController implements OnApplicationBootstrap, OnModuleDestroy {
+    private limiter: RateLimiter | null = null;
+    private stopRetention: (() => void) | null = null;
+
     constructor(
         private connection: TransactionalConnection,
         private tracking: VisitorTrackingService,
     ) {}
+
+    onApplicationBootstrap(): void {
+        const opts = getOptions();
+        const rl = opts.rateLimit || { capacity: 240, windowMs: 60_000 };
+        this.limiter = new RateLimiter({ capacity: rl.capacity, windowMs: rl.windowMs });
+        if (opts.retention) {
+            this.stopRetention = startRetentionSweeper({
+                getConnection: () => this.connection.rawConnection,
+                table: 'visitor_event',
+                options: opts.retention,
+                label: 'visitor-analytics',
+            });
+        }
+    }
+
+    onModuleDestroy(): void {
+        this.stopRetention?.();
+        this.stopRetention = null;
+    }
+
+    private rateLimited(req: Request, res: Response, bucket: string): boolean {
+        const ip = (req.headers['cf-connecting-ip'] as string) || req.ip || '';
+        if (!ip || !this.limiter) return false;
+        if (!this.limiter.allow(`${bucket}|${ip}`)) {
+            res.setHeader('Retry-After', '60');
+            res.status(429).json({ stored: 0, skipped: 'rate-limited' });
+            return true;
+        }
+        return false;
+    }
 
     /**
      * Ingest endpoint hit by the storefront tracker. Anonymous, takes
@@ -62,7 +102,10 @@ export class VisitorTrackingController {
         // Lenient CORS — analytics ingestion must work cross-origin from
         // both storefronts (and dev hosts) without complex config.
         this.applyCors(req, res);
+        applySecurityHeaders(res);
         if (req.method === 'OPTIONS') return res.status(204).end();
+
+        if (this.rateLimited(req, res, 'track')) return;
 
         const opts = getOptions();
 
@@ -86,8 +129,11 @@ export class VisitorTrackingController {
             }
         }
 
-        let visitorId = String(cookies[COOKIE_VISITOR] || '').slice(0, 64);
-        let sessionId = String(cookies[COOKIE_SESSION] || '').slice(0, 64);
+        // Read + verify the cookies. When a signingSecret is configured,
+        // we expect each cookie to be `<id>.<hmac>` and reject tampered
+        // values. Without a secret, we accept bare ids (legacy).
+        let visitorId = this.readSignedCookie(cookies[COOKIE_VISITOR], opts.signingSecret);
+        let sessionId = this.readSignedCookie(cookies[COOKIE_SESSION], opts.signingSecret);
         let issuedVisitor = false;
         let issuedSession = false;
         if (!visitorId || !/^[a-f0-9]{16,64}$/i.test(visitorId)) {
@@ -121,10 +167,15 @@ export class VisitorTrackingController {
 
         // Refresh cookies on every hit so the session window slides while
         // the visitor is active.
-        const cookieOpts = (maxAgeSec: number) => `Path=/; Max-Age=${maxAgeSec}; SameSite=Lax`;
+        // Set Secure when serving over HTTPS (Cloudflare forwards a hint).
+        const secureFlag = (req.headers['x-forwarded-proto'] === 'https' || req.headers['cf-visitor']?.includes('https'))
+            ? '; Secure' : '';
+        const cookieOpts = (maxAgeSec: number) => `Path=/; Max-Age=${maxAgeSec}; SameSite=Lax${secureFlag}`;
+        const vidCookie = opts.signingSecret ? signValue(visitorId, opts.signingSecret) : visitorId;
+        const sidCookie = opts.signingSecret ? signValue(sessionId, opts.signingSecret) : sessionId;
         res.setHeader('Set-Cookie', [
-            `${COOKIE_VISITOR}=${visitorId}; ${cookieOpts(VISITOR_TTL_DAYS * 86400)}`,
-            `${COOKIE_SESSION}=${sessionId}; ${cookieOpts(SESSION_IDLE_MIN * 60)}`,
+            `${COOKIE_VISITOR}=${vidCookie}; ${cookieOpts(VISITOR_TTL_DAYS * 86400)}`,
+            `${COOKIE_SESSION}=${sidCookie}; ${cookieOpts(SESSION_IDLE_MIN * 60)}`,
         ]);
 
         return res.json({
@@ -615,14 +666,29 @@ export class VisitorTrackingController {
 
     private applyCors(req: Request, res: Response) {
         const origin = String(req.headers.origin || '');
-        // Allow the two storefronts + local dev. Anything else gets a
-        // wildcard echo of the request origin so previews work without
-        // needing config — we trust the request itself for ingest.
-        res.setHeader('Access-Control-Allow-Origin', origin || '*');
+        const allowList = getOptions().corsAllowedOrigins || [];
+        // When an allowlist is configured we reflect only matching
+        // origins; otherwise we reflect any (legacy behaviour, looser).
+        let allow = origin || '*';
+        if (allowList.length) {
+            allow = allowList.includes(origin) ? origin : 'null';
+        }
+        res.setHeader('Access-Control-Allow-Origin', allow);
         res.setHeader('Vary', 'Origin');
         res.setHeader('Access-Control-Allow-Credentials', 'true');
         res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'content-type');
+    }
+
+    /** Read a possibly-signed cookie. When `secret` is provided we
+     *  require + verify the signature; otherwise we return the raw
+     *  value. Returns empty string for missing / tampered values. */
+    private readSignedCookie(raw: string | undefined, secret: string | undefined): string {
+        const value = String(raw || '').slice(0, 256);
+        if (!value) return '';
+        if (!secret) return value;
+        const verified = verifySignedValue(value, secret);
+        return verified || '';
     }
 
     private parseCookies(req: Request): Record<string, string> {
