@@ -1,4 +1,4 @@
-import { Component, OnInit, ChangeDetectorRef } from '@angular/core';
+import { Component, OnDestroy, OnInit, ChangeDetectorRef, NgZone } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { NotificationService } from '@vendure/admin-ui/core';
 
@@ -59,6 +59,13 @@ interface VisitorProfile {
 
         <vdr-page-block>
             <div class="summary-row">
+                <div class="summary-card live-card">
+                    <div class="num">
+                        <span class="live-dot" [class.connected]="liveConnected"></span>
+                        {{ liveCount | number }}
+                    </div>
+                    <div class="lbl">Live now <span class="live-meta" *ngIf="liveUpdatedAt">· refreshed {{ liveUpdatedAt | date:'HH:mm:ss' }}</span></div>
+                </div>
                 <div class="summary-card">
                     <div class="num">{{ summary.visitors | number }}</div>
                     <div class="lbl">Unique visitors</div>
@@ -75,6 +82,31 @@ interface VisitorProfile {
                     <div class="num">{{ humanTime(summary.avgTimeMs) }}</div>
                     <div class="lbl">Avg time on page</div>
                 </div>
+            </div>
+
+            <div class="live-strip" *ngIf="liveRecent.length > 0">
+                <div class="live-strip-title">
+                    Currently viewing
+                    <span class="muted" *ngIf="!liveConnected">— connection lost, reconnecting…</span>
+                </div>
+                <table class="table table-compact">
+                    <thead>
+                        <tr>
+                            <th>Visitor</th>
+                            <th>URL</th>
+                            <th>Country</th>
+                            <th class="num-col">Last seen</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr *ngFor="let v of liveRecent" class="clickable" (click)="openProfile(v.visitorId)">
+                            <td class="mono">{{ v.visitorId | slice:0:10 }}…</td>
+                            <td><span class="url">{{ v.url }}</span></td>
+                            <td>{{ v.country || '—' }}</td>
+                            <td class="num-col">{{ v.secondsAgo }}s ago</td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </vdr-page-block>
 
@@ -363,6 +395,31 @@ interface VisitorProfile {
         }
         .summary-card .num { font-size: 24px; font-weight: 700; }
         .summary-card .lbl { font-size: 11px; color: var(--color-component-color-300); margin-top: 4px; }
+
+        .live-card { border-left: 3px solid #ef4444; }
+        .live-card .num { display: inline-flex; align-items: center; gap: 8px; }
+        .live-dot {
+            display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+            background: #9ca3af; box-shadow: 0 0 0 0 rgba(156,163,175,.4);
+        }
+        .live-dot.connected {
+            background: #ef4444;
+            animation: live-pulse 1.6s ease-in-out infinite;
+        }
+        .live-meta { color: var(--color-component-color-300); font-size: 10px; font-weight: 400; }
+        @keyframes live-pulse {
+            0%   { box-shadow: 0 0 0 0 rgba(239,68,68,.6); }
+            70%  { box-shadow: 0 0 0 10px rgba(239,68,68,0); }
+            100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
+        }
+
+        .live-strip {
+            border: 1px solid var(--color-component-border-200);
+            border-radius: 6px;
+            background: var(--color-component-bg-100);
+            padding: 12px;
+        }
+        .live-strip-title { font-size: 12px; font-weight: 600; margin-bottom: 8px; }
         .card-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
         .card-title .muted { color: var(--color-component-color-300); font-weight: 400; font-size: 12px; margin-left: 8px; }
         .muted { color: var(--color-component-color-300); }
@@ -445,12 +502,19 @@ interface VisitorProfile {
         .event-time-on { color: var(--color-component-color-300); }
     `],
 })
-export class VisitorsComponent implements OnInit {
+export class VisitorsComponent implements OnInit, OnDestroy {
     loading = false;
     days = 30;
 
     summary = { visitors: 0, sessions: 0, pageviews: 0, avgTimeMs: 0 };
     funnel: FunnelStage[] = [];
+
+    // Live-now SSE state.
+    private liveSource: EventSource | null = null;
+    liveCount = 0;
+    liveConnected = false;
+    liveUpdatedAt: Date | null = null;
+    liveRecent: Array<{ visitorId: string; url: string; country: string | null; secondsAgo: number }> = [];
 
     topPages: TopPage[] = [];
     topTotal = 0;
@@ -477,9 +541,56 @@ export class VisitorsComponent implements OnInit {
         private http: HttpClient,
         private notify: NotificationService,
         private cdr: ChangeDetectorRef,
+        private zone: NgZone,
     ) {}
 
-    ngOnInit() { this.loadAll(); }
+    ngOnInit() {
+        this.loadAll();
+        this.connectLive();
+    }
+
+    ngOnDestroy() {
+        this.disconnectLive();
+    }
+
+    /** Open the live-now SSE stream. Angular's zone has no idea events
+     *  are arriving from EventSource, so we hop back inside it before
+     *  mutating state — otherwise the view won't refresh. */
+    private connectLive(): void {
+        if (typeof EventSource === 'undefined') return;
+        try {
+            this.liveSource = new EventSource('/ees/visitors/live', { withCredentials: true } as any);
+        } catch {
+            return;
+        }
+        this.liveSource.onopen = () => this.zone.run(() => {
+            this.liveConnected = true;
+            this.cdr.markForCheck();
+        });
+        this.liveSource.onerror = () => this.zone.run(() => {
+            this.liveConnected = false;
+            this.cdr.markForCheck();
+        });
+        this.liveSource.onmessage = (ev) => this.zone.run(() => {
+            try {
+                const data = JSON.parse(ev.data);
+                this.liveCount = data.activeCount || 0;
+                this.liveRecent = Array.isArray(data.recent) ? data.recent : [];
+                this.liveUpdatedAt = new Date(data.ts || Date.now());
+                this.liveConnected = true;
+                this.cdr.markForCheck();
+            } catch {
+                // ignore malformed frame
+            }
+        });
+    }
+
+    private disconnectLive(): void {
+        if (this.liveSource) {
+            this.liveSource.close();
+            this.liveSource = null;
+        }
+    }
 
     setDays(d: number) {
         this.days = d;

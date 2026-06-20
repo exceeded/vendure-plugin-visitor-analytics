@@ -1,11 +1,32 @@
 # Changelog
 
-All notable changes to `@hulo/vendure-plugin-visitor-analytics` are
+All notable changes to `@huloglobal/vendure-plugin-visitor-analytics` are
 documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this
 project adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] — Unreleased
+## [0.3.0]
+
+### Added
+- **Conversion goals** — new `ConversionGoal` entity with a URL-glob
+  matcher (`*` within segment, `**` across segments). Pageviews matching
+  a goal are tagged with `goalId` at ingest. CRUD endpoints
+  (`GET /ees/goals`, `POST /ees/goals`, `PUT /ees/goals/:id`,
+  `DELETE /ees/goals/:id`) and `GET /ees/goals/stats` for completion
+  totals per period.
+- **Bot detection** — UA-classified `isBot` boolean on every event.
+  Default keeps bot events for visibility; new `dropBotEvents` option
+  skips ingest entirely.
+- **Privacy controls** —
+  - `honorDoNotTrack` (default `true`) — `DNT: 1` returns
+    `{stored:0, skipped:'dnt'}`
+  - `anonymizeIp` (default `true`) — IPv4 last octet / IPv6 last 80 bits
+    dropped before storage; `ipHash` still uses the raw IP
+  - `requireConsent` (default `false`) — gate ingest behind a body
+    `consent:true` or cookie `ees_consent=1`
+- **CSV export** — `GET /ees/visitors/export.csv?days=N` (max 90).
+
+## [0.2.0]
 
 ### Added
 - **UTM attribution** — `utmSource` / `utmMedium` / `utmCampaign` /
@@ -35,5 +56,5 @@ project adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
   profile + journey.
 - Admin UI: summary tiles, funnel bars, top + exit page tables,
   recent visitors table with clickable profile drawer.
-- Licence verification via `@hulo/vendure-licence-sdk` with revocation
+- Licence verification via `@huloglobal/vendure-licence-sdk` with revocation
   polling.

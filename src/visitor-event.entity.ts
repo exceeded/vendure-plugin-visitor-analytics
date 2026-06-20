@@ -137,4 +137,18 @@ export class VisitorEvent extends VendureEntity {
      *  group by domain without parsing every URL at read time. */
     @Column({ type: 'varchar', length: 200, nullable: true })
     referrerDomain!: string | null;
+
+    /** UA-classified bot flag. When the storefront calls `recordEvent`
+     *  from a crawler or monitoring probe, we still ingest the event but
+     *  set `isBot=true` so the dashboard can exclude it from real-human
+     *  counts. */
+    @Index()
+    @Column({ type: 'boolean', default: false })
+    isBot!: boolean;
+
+    /** ID of the ConversionGoal whose pattern matched this pageview's
+     *  URL. NULL when no goal matched. */
+    @Index()
+    @Column({ type: 'int', nullable: true })
+    goalId!: number | null;
 }

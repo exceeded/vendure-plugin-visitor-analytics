@@ -1,4 +1,4 @@
-# @hulo/vendure-plugin-visitor-analytics
+# @huloglobal/vendure-plugin-visitor-analytics
 
 Full-funnel visitor analytics for Vendure storefronts. Captures every
 pageview, time-on-page, and exit point; bundles a per-visitor profile
@@ -33,13 +33,13 @@ Maintained by Wayne Garrison.
 ## Install
 
 ```bash
-yarn add @hulo/vendure-plugin-visitor-analytics
+yarn add @huloglobal/vendure-plugin-visitor-analytics
 ```
 
 ## Wire up
 
 ```ts
-import { VisitorAnalyticsPlugin } from '@hulo/vendure-plugin-visitor-analytics';
+import { VisitorAnalyticsPlugin } from '@huloglobal/vendure-plugin-visitor-analytics';
 
 export const config: VendureConfig = {
   plugins: [
@@ -54,7 +54,7 @@ export const config: VendureConfig = {
 Add to your admin-ui compile step:
 
 ```ts
-import { VisitorAnalyticsPlugin } from '@hulo/vendure-plugin-visitor-analytics';
+import { VisitorAnalyticsPlugin } from '@huloglobal/vendure-plugin-visitor-analytics';
 
 compileUiExtensions({
   outputPath: 'admin-ui',

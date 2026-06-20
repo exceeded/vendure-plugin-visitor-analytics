@@ -1,6 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { TransactionalConnection } from '@vendure/core';
 import { createHash, randomUUID } from 'crypto';
+import { ConversionGoal } from './conversion-goal.entity';
+import { anonymizeIp, isBotUa } from './detect-bot';
+import { getOptions } from './plugin';
+import { matchUrl } from './url-pattern';
 import { VisitorEvent } from './visitor-event.entity';
 
 const loggerCtx = 'VisitorTrackingService';
@@ -56,12 +60,30 @@ export class VisitorTrackingService {
     /** Persist a batch of events with full enrichment. */
     async ingest(input: IngestInput): Promise<{ stored: number }> {
         if (!input?.events?.length) return { stored: 0 };
-        const repo = this.connection.rawConnection.getRepository(VisitorEvent);
 
+        const opts = getOptions();
+        const isBot = isBotUa(input.userAgent);
+        // Drop bot events entirely when the option is on. Otherwise we
+        // ingest them but flag the row so dashboards can exclude them.
+        if (isBot && opts.dropBotEvents) return { stored: 0 };
+
+        const repo = this.connection.rawConnection.getRepository(VisitorEvent);
         const enriched = await this.enrichContext(input);
+
+        // Anonymise the stored IP when the option is on (default). Hash
+        // is still computed from the raw IP so "unique visitor" counts
+        // stay accurate.
+        if (opts.anonymizeIp !== false) {
+            enriched.ip = anonymizeIp(enriched.ip);
+        }
+
+        const goals = await this.loadGoals(input.channelId);
 
         const rows = input.events.map(e => {
             const utm = parseUtm(e.url);
+            const matchingGoal = e.type === 'pageview'
+                ? goals.find(g => matchUrl(g.urlPattern, e.url || ''))
+                : undefined;
             return repo.create({
                 visitorId: input.visitorId,
                 sessionId: input.sessionId,
@@ -82,6 +104,8 @@ export class VisitorTrackingService {
                 utmCampaign: utm.campaign,
                 utmTerm: utm.term,
                 utmContent: utm.content,
+                isBot,
+                goalId: matchingGoal ? (Number(matchingGoal.id) || null) : null,
             });
         });
 
@@ -92,6 +116,31 @@ export class VisitorTrackingService {
             return { stored: 0 };
         }
         return { stored: rows.length };
+    }
+
+    private goalCache: { ts: number; byChannel: Map<number, ConversionGoal[]> } = { ts: 0, byChannel: new Map() };
+
+    /** Goals change rarely — cache for 60s per ingest path. */
+    private async loadGoals(channelId: number): Promise<ConversionGoal[]> {
+        const now = Date.now();
+        if (now - this.goalCache.ts > 60_000) {
+            this.goalCache = { ts: now, byChannel: new Map() };
+        }
+        const cached = this.goalCache.byChannel.get(channelId);
+        if (cached) return cached;
+        try {
+            const repo = this.connection.rawConnection.getRepository(ConversionGoal);
+            const rows = await repo.find({ where: { channelId, enabled: true } });
+            this.goalCache.byChannel.set(channelId, rows);
+            return rows;
+        } catch {
+            return [];
+        }
+    }
+
+    /** Public so the controller can invalidate after CRUD. */
+    invalidateGoalCache(): void {
+        this.goalCache = { ts: 0, byChannel: new Map() };
     }
 
     /** Build the full enrichment context — UA parsing + MaxMind geo + IP

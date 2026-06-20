@@ -1,6 +1,8 @@
-import { Body, Controller, Get, Param, Post, Req, Res } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Put, Req, Res } from '@nestjs/common';
 import { Ctx, Permission, RequestContext, TransactionalConnection } from '@vendure/core';
 import { Request, Response } from 'express';
+import { ConversionGoal } from './conversion-goal.entity';
+import { getOptions } from './plugin';
 import { VisitorEvent } from './visitor-event.entity';
 import { VisitorTrackingService } from './visitor-tracking.service';
 
@@ -62,7 +64,28 @@ export class VisitorTrackingController {
         this.applyCors(req, res);
         if (req.method === 'OPTIONS') return res.status(204).end();
 
+        const opts = getOptions();
+
+        // Privacy: honour Do-Not-Track when configured. We still return 200
+        // so the storefront can't tell the difference between "stored" and
+        // "skipped" — keeps the wire shape stable.
+        if (opts.honorDoNotTrack) {
+            const dnt = String(req.headers['dnt'] || req.headers['sec-gpc'] || '').trim();
+            if (dnt === '1') {
+                return res.json({ stored: 0, skipped: 'dnt' });
+            }
+        }
+
         const cookies = this.parseCookies(req);
+
+        // Privacy: optional consent gate.
+        if (opts.requireConsent) {
+            const consented = body?.consent === true || cookies['ees_consent'] === '1';
+            if (!consented) {
+                return res.json({ stored: 0, skipped: 'no-consent' });
+            }
+        }
+
         let visitorId = String(cookies[COOKIE_VISITOR] || '').slice(0, 64);
         let sessionId = String(cookies[COOKIE_SESSION] || '').slice(0, 64);
         let issuedVisitor = false;
@@ -613,5 +636,127 @@ export class VisitorTrackingController {
             if (k) out[k] = v;
         }
         return out;
+    }
+
+    // ── Conversion goals ────────────────────────────────────────────────
+
+    /** Admin: list goals for a channel. */
+    @Get('goals')
+    async listGoals(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        const channelId = parseInt(String((req.query as any).channelId || '1'), 10) || 1;
+        const repo = this.connection.rawConnection.getRepository(ConversionGoal);
+        const rows = await repo.find({ where: { channelId }, order: { id: 'ASC' } });
+        return res.json({ goals: rows });
+    }
+
+    /** Admin: create a goal. */
+    @Post('goals')
+    async createGoal(@Ctx() ctx: RequestContext, @Body() body: any, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        const repo = this.connection.rawConnection.getRepository(ConversionGoal);
+        const row = repo.create({
+            channelId: Number(body?.channelId) || 1,
+            name: String(body?.name || '').slice(0, 128).trim(),
+            urlPattern: String(body?.urlPattern || '').slice(0, 256).trim(),
+            valueMinor: Math.max(0, parseInt(body?.valueMinor, 10) || 0),
+            enabled: body?.enabled !== false,
+        });
+        if (!row.name || !row.urlPattern) {
+            return res.status(400).json({ error: 'name and urlPattern required' });
+        }
+        const saved = await repo.save(row);
+        this.tracking.invalidateGoalCache();
+        return res.json({ goal: saved });
+    }
+
+    /** Admin: update a goal. */
+    @Put('goals/:id')
+    async updateGoal(@Ctx() ctx: RequestContext, @Param('id') idParam: string, @Body() body: any, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        const id = parseInt(idParam, 10);
+        const repo = this.connection.rawConnection.getRepository(ConversionGoal);
+        const row = await repo.findOne({ where: { id } });
+        if (!row) return res.status(404).json({ error: 'Not found' });
+        if (typeof body?.name === 'string') row.name = body.name.slice(0, 128);
+        if (typeof body?.urlPattern === 'string') row.urlPattern = body.urlPattern.slice(0, 256);
+        if (typeof body?.valueMinor === 'number') row.valueMinor = Math.max(0, body.valueMinor);
+        if (typeof body?.enabled === 'boolean') row.enabled = body.enabled;
+        const saved = await repo.save(row);
+        this.tracking.invalidateGoalCache();
+        return res.json({ goal: saved });
+    }
+
+    /** Admin: delete a goal. */
+    @Delete('goals/:id')
+    async deleteGoal(@Ctx() ctx: RequestContext, @Param('id') idParam: string, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        const id = parseInt(idParam, 10);
+        const repo = this.connection.rawConnection.getRepository(ConversionGoal);
+        const result = await repo.delete({ id });
+        this.tracking.invalidateGoalCache();
+        return res.json({ ok: !!(result.affected && result.affected > 0) });
+    }
+
+    /** Admin: per-goal stats over the last N days (default 30). */
+    @Get('goals/stats')
+    async goalsStats(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        const days = Math.min(Math.max(parseInt(String((req.query as any).days || '30'), 10) || 30, 1), 365);
+        const channelId = parseInt(String((req.query as any).channelId || '1'), 10) || 1;
+        const rows = await this.connection.rawConnection.query(
+            `SELECT g.id, g.name, g.urlPattern, g.valueMinor, g.enabled,
+                    COUNT(DISTINCT v.visitorId) AS uniqueVisitors,
+                    COUNT(*) AS completions
+             FROM conversion_goal g
+             LEFT JOIN visitor_event v
+                ON v.goalId = g.id
+               AND v.createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
+               AND v.isBot = 0
+             WHERE g.channelId = ?
+             GROUP BY g.id`,
+            [days, channelId],
+        );
+        return res.json({ days, channelId, goals: rows.map((r: any) => ({
+            ...r,
+            valueMinor: Number(r.valueMinor) * Number(r.completions || 0),
+        })) });
+    }
+
+    /** Admin: CSV export of recent visitor events with all enrichment. */
+    @Get('visitors/export.csv')
+    async exportCsv(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        const days = Math.min(Math.max(parseInt(String((req.query as any).days || '7'), 10) || 7, 1), 90);
+        const rows = await this.connection.rawConnection.query(
+            `SELECT createdAt, visitorId, sessionId, customerId, channelId,
+                    type, url, title, referrerDomain,
+                    country, region, city, browser, os, device,
+                    isBot, goalId, utmSource, utmMedium, utmCampaign
+             FROM visitor_event
+             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
+             ORDER BY createdAt DESC
+             LIMIT 200000`,
+            [days],
+        );
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="visitors-${new Date().toISOString().slice(0, 10)}.csv"`);
+        const esc = (v: any): string => {
+            if (v === null || v === undefined) return '';
+            const s = String(v).replace(/"/g, '""');
+            return /[",\n]/.test(s) ? `"${s}"` : s;
+        };
+        res.write('createdAt,visitorId,sessionId,customerId,channelId,type,url,title,referrerDomain,country,region,city,browser,os,device,isBot,goalId,utmSource,utmMedium,utmCampaign\n');
+        for (const r of rows) {
+            res.write([
+                esc(r.createdAt instanceof Date ? r.createdAt.toISOString() : r.createdAt),
+                esc(r.visitorId), esc(r.sessionId), esc(r.customerId), esc(r.channelId),
+                esc(r.type), esc(r.url), esc(r.title), esc(r.referrerDomain),
+                esc(r.country), esc(r.region), esc(r.city), esc(r.browser), esc(r.os), esc(r.device),
+                esc(r.isBot), esc(r.goalId),
+                esc(r.utmSource), esc(r.utmMedium), esc(r.utmCampaign),
+            ].join(',') + '\n');
+        }
+        return res.end();
     }
 }

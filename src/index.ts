@@ -1,5 +1,5 @@
 /**
- * `@hulo/vendure-plugin-visitor-analytics` — public exports.
+ * `@huloglobal/vendure-plugin-visitor-analytics` — public exports.
  */
 
 export { VisitorAnalyticsPlugin, VisitorAnalyticsPluginOptions } from './plugin';
