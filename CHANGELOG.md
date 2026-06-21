@@ -5,6 +5,42 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this
 project adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1]
+
+### Changed
+- Comprehensive README refresh — documents the full v0.4 feature set
+  with the storefront snippet, every privacy + security option, and
+  the conversion-goals API.
+
+## [0.4.0]
+
+### Added
+- Signed visitor + session cookies via the licence-sdk `signValue` /
+  `verifySignedValue` helpers — tampered cookies are rejected.
+- `Secure` cookie flag is set automatically when serving over HTTPS.
+- Rate limiter (240/60s default) on `POST /ees/track`.
+- `corsAllowedOrigins` option restricts CORS reflection to the
+  configured list (legacy wildcard preserved when empty).
+- Security headers on every response.
+- Opt-in retention sweeper via `options.retention`.
+
+## [0.3.3]
+
+### Changed
+- Mobile-friendly admin UI — summary cards reflow, tables scroll
+  inside their card, profile drawer goes full-width.
+
+## [0.3.2]
+
+### Changed
+- Republish targeting `@huloglobal/vendure-licence-sdk@^0.2.0`.
+
+## [0.3.1]
+
+### Added
+- `UpdateChecker` integration — `/ees/visitors/status` endpoint returns
+  version + update info; admin banner appears on new releases.
+
 ## [0.3.0]
 
 ### Added
