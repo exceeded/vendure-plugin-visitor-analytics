@@ -1,34 +1,18 @@
 # @huloglobal/vendure-plugin-visitor-analytics
 
-Full-funnel visitor analytics for Vendure storefronts. Captures every
-pageview, time-on-page, and exit point; bundles a per-visitor profile
-drawer with parsed user-agent, MaxMind geo enrichment and a complete
-event timeline; stitches guest browsing to signed-in browsing across
-sessions so the journey survives login.
+Self-hosted full-funnel visitor analytics for Vendure storefronts.
+Pageviews, time-on-page, exit pages, configurable funnel, UTM
+attribution, conversion goals with URL-glob matching, bot detection,
+and a per-visitor profile drawer with parsed user-agent and MaxMind
+geo. Privacy-first defaults: DNT, IP anonymisation, optional consent
+gate.
 
 Maintained by Wayne Garrison.
 
-## What you get
+## Buy
 
-- **Ingest endpoint** at `POST /ees/track` that takes a small batch of
-  events from the storefront. Issues a long-lived visitor cookie
-  (`ees_vid`, 2 years) and a sliding session cookie (`ees_sid`,
-  30-minute idle).
-- **Auto-enrichment** at ingest time:
-  - User-agent parsed via `ua-parser-js` → browser / browser version /
-    OS / OS version / device type. Bots auto-detected.
-  - IP-to-geo via MaxMind GeoLite2-City (no MaxMind account required,
-    DB fetched at install via `geolite2-redist`). Or use the upstream
-    proxy's resolved country / region when Cloudflare / Akamai /
-    Fastly is in front — saves the lookup.
-  - Raw IP is kept; a SHA-256 salted hash is stored alongside for
-    spot-the-same-bot work.
-- **Admin endpoints**: summary tiles, top pages, exit pages, funnel,
-  recent visitors, per-visitor profile + journey timeline. All
-  paginated.
-- **Admin UI**: top-line tiles, funnel bars, top + exit page tables,
-  recent visitors with a clickable profile drawer showing every field
-  + per-session breakdown + the full event timeline.
+7-day free trial then **£9.95/month**, or **£199 one-off lifetime** at
+[elite.charity/licence/buy/vendure-plugin-visitor-analytics](https://elite.charity/licence/buy/vendure-plugin-visitor-analytics).
 
 ## Install
 
@@ -36,132 +20,177 @@ Maintained by Wayne Garrison.
 yarn add @huloglobal/vendure-plugin-visitor-analytics
 ```
 
-## Wire up
-
 ```ts
 import { VisitorAnalyticsPlugin } from '@huloglobal/vendure-plugin-visitor-analytics';
 
 export const config: VendureConfig = {
-  plugins: [
-    VisitorAnalyticsPlugin.init({
-      publicBaseUrl: 'https://shop.example.com',
-      licenceKey: process.env.HULO_LICENCE_KEY,
-    }),
-  ],
+    plugins: [
+        VisitorAnalyticsPlugin.init({
+            publicBaseUrl: 'https://shop.example.com',
+            licenceKey: process.env.HULO_LICENCE_KEY_VISITOR_ANALYTICS,
+
+            // -- Privacy (defaults shown) --
+            honorDoNotTrack: true,
+            anonymizeIp: true,
+            requireConsent: false,
+            dropBotEvents: false,
+
+            // -- Security (recommended in production) --
+            signingSecret: process.env.HULO_VISITOR_SIGNING_SECRET,
+            corsAllowedOrigins: [
+                'https://shop.example.com',
+                'https://www.example.com',
+            ],
+            rateLimit: { capacity: 240, windowMs: 60_000 },
+
+            // -- Retention (opt-in) --
+            retention: { days: 365, maxRows: 50_000_000 },
+        }),
+    ],
 };
 ```
 
-Add to your admin-ui compile step:
+Add `VisitorAnalyticsPlugin.uiExtensions` to your `compileUiExtensions`
+config.
+
+## Storefront snippet
 
 ```ts
-import { VisitorAnalyticsPlugin } from '@huloglobal/vendure-plugin-visitor-analytics';
+// utils/visitor-tracking.ts
+const ENDPOINT = 'https://shop.example.com/ees/track';
+const CHANNEL_ID = 1;
+let queue: any[] = [];
+let flushTimer: any;
 
-compileUiExtensions({
-  outputPath: 'admin-ui',
-  extensions: [VisitorAnalyticsPlugin.uiExtensions /* + your other extensions */],
-});
-```
-
-## Storefront integration
-
-The plugin ships only the backend; the storefront emits events. A Qwik
-storefront example:
-
-```ts
-// utils/tracker.ts
-const TRACK_URL = 'https://shop.example.com/ees/track';
-let lastPath = '';
-let pageOpenedAt = 0;
-
-export function recordPageView(): void {
-  const url = location.pathname + location.search;
-  const events: any[] = [];
-  if (lastPath && lastPath !== url) {
-    events.push({ type: 'unload', url: lastPath, timeOnPageMs: Date.now() - pageOpenedAt });
-  }
-  events.push({ type: 'pageview', url, title: document.title, referrer: document.referrer });
-  lastPath = url;
-  pageOpenedAt = Date.now();
-  fetch(TRACK_URL, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ channelId: 1, events }),
-    keepalive: true,
-  }).catch(() => undefined);
+export function recordPageview(url: string, title: string) {
+    queue.push({ type: 'pageview', url, title, clientTs: Date.now() });
+    scheduleFlush();
 }
 
-// On unload, prefer sendBeacon — it survives tab-close.
-window.addEventListener('pagehide', () => {
-  const blob = new Blob([JSON.stringify({
-    channelId: 1,
-    events: [{ type: 'unload', url: lastPath, timeOnPageMs: Date.now() - pageOpenedAt }],
-  })], { type: 'application/json' });
-  navigator.sendBeacon(TRACK_URL, blob);
-});
-```
-
-## Custom events
-
-Fire a `recordEvent(type, meta?)` call from your storefront whenever a
-visitor does something interesting — add-to-cart, search, signup,
-quote-request — and the event shows up in the admin "Top events" table
-straight away.
-
-```ts
-function recordEvent(type, meta) {
-  navigator.sendBeacon(TRACK_URL, new Blob([JSON.stringify({
-    channelId: 1,
-    events: [{ type, url: location.pathname + location.search, meta }],
-  })], { type: 'application/json' }));
+export function recordEvent(type: string, meta: any) {
+    queue.push({
+        type, url: location.pathname + location.search,
+        meta, clientTs: Date.now(),
+    });
+    scheduleFlush();
 }
 
-// Add to cart
-recordEvent('add_to_cart', { sku: 'WIN11-PRO', priceWithTax: 28900 });
-
-// Search query submitted
-recordEvent('search', { query: 'windows server 2022' });
-
-// Quote request from the contact form
-recordEvent('quote_request', { customerEmail });
-
-// Newsletter signup
-recordEvent('newsletter_signup', { source: 'footer' });
+function scheduleFlush() {
+    clearTimeout(flushTimer);
+    flushTimer = setTimeout(flush, 1000);
+}
+function flush() {
+    if (!queue.length) return;
+    const body = JSON.stringify({ channelId: CHANNEL_ID, events: queue });
+    queue = [];
+    navigator.sendBeacon?.(ENDPOINT, body) ||
+        fetch(ENDPOINT, {
+            method: 'POST', body,
+            headers: { 'content-type': 'application/json' }, keepalive: true,
+        });
+}
 ```
 
-The full meta blob is persisted as JSON on the event row so you can
-slice on it later from the admin UI.
+Call `recordPageview()` on every route change. For custom events
+(add-to-cart, search, signup, …) call `recordEvent(type, meta)` at the
+appropriate point.
 
-## UTM attribution
+## Feature tour
 
-The plugin parses `utm_source` / `utm_medium` / `utm_campaign` /
-`utm_term` / `utm_content` from the URL of every incoming event and
-captures the referrer domain alongside. The admin "Traffic sources"
-table groups visitors by `(source, medium)` so you can see which
-campaigns convert.
+### Lightweight ingest
 
-Drop `?utm_source=google&utm_medium=cpc&utm_campaign=spring24` onto any
-inbound link and it surfaces automatically — no extra config.
+- `POST /ees/track` accepts a batch of up to 50 events at once.
+- Visitor + session cookies (`ees_vid`, `ees_sid`) issued + refreshed
+  automatically. When `signingSecret` is set, cookies are HMAC-signed
+  and tampered values are rejected — the visitor gets a fresh id.
+- `Secure` flag is set automatically when serving over HTTPS.
 
-## Live now widget
+### Auto-enrichment
 
-The admin dashboard's top tile streams the currently-active visitor
-count + the URLs they're on in real time via Server-Sent Events
-(`GET /ees/visitors/live`). Updates every 5 seconds, reconnects
-automatically if the connection drops. Active = at least one event in
-the last 5 minutes.
+Per event:
 
-## Init options
+- **User-agent** parsed via `ua-parser-js` → browser, version, OS,
+  device.
+- **Geo** via MaxMind GeoLite2-City (no MaxMind account required — DB
+  fetched at install via `geolite2-redist`). Skipped when the upstream
+  proxy already provides a country (Cloudflare, Akamai, Fastly).
+- **UTM attribution** parsed server-side from every pageview URL:
+  `utmSource`, `utmMedium`, `utmCampaign`, `utmTerm`, `utmContent`. Plus
+  `referrerDomain` for grouping by source even when UTM is absent.
+- **Bot flag** — known crawler / monitoring / library UAs (Googlebot,
+  Bingbot, UptimeRobot, Datadog, curl, Puppeteer, …) marked `isBot=true`.
 
-| Option | Type | Required | Description |
+### Configurable conversion goals
+
+A goal is a URL glob that, when matched, counts the visitor as having
+converted. Supports `*` (within segment) and `**` (across segments).
+
+```bash
+curl -X POST https://shop.example.com/ees/goals -H 'content-type: application/json' \
+  -d '{"channelId":1,"name":"Checkout completed","urlPattern":"/checkout/thank-you/*","valueMinor":5000}'
+```
+
+Stats at `GET /ees/goals/stats?days=30&channelId=1`.
+
+### Privacy controls
+
+- `honorDoNotTrack: true` (default) — `DNT: 1` and `Sec-GPC: 1` requests
+  get a 200 with `{stored:0, skipped:'dnt'}`.
+- `anonymizeIp: true` (default) — IPv4 last octet dropped before
+  storage; IPv6 reduced to the first 3 hextets. `ipHash` still uses the
+  raw IP so unique-visitor counts stay accurate.
+- `requireConsent: false` (default) — flip on to require a `consent: true`
+  body field or an `ees_consent=1` cookie before ingest.
+- `dropBotEvents: false` (default) — flip on to skip bot UAs entirely.
+
+### Live-now widget
+
+SSE stream at `GET /ees/visitors/live` pushes the active-visitor count
+and the 20 most recent URLs every 5 seconds. Auto-reconnects.
+
+### Per-visitor journey
+
+Click any visitor for the full timeline: pages, custom events,
+time-on-page, country, browser, OS.
+
+### CSV export
+
+`GET /ees/visitors/export.csv?days=N` (max 90 days) returns the raw
+events with full enrichment.
+
+## HTTP endpoints
+
+| Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| `publicBaseUrl` | `string` | yes | Public hostname of your Vendure server (must match licence). |
-| `licenceKey` | `string` | no* | JWT licence key. Without it ingest works but the admin dashboards return 403. |
+| `POST` | `/ees/track` | public | ingest batch of events |
+| `GET` | `/ees/visitors/summary` | admin | top-line + daily series |
+| `GET` | `/ees/visitors/sources` | admin | top sources by visits |
+| `GET` | `/ees/visitors/top-pages` | admin | most-visited URLs |
+| `GET` | `/ees/visitors/funnel` | admin | configurable funnel |
+| `GET` | `/ees/visitors/exit-pages` | admin | top exit pages |
+| `GET` | `/ees/visitors/top-events` | admin | top custom events |
+| `GET` | `/ees/visitors/live` | admin | SSE live-now stream |
+| `GET` | `/ees/visitors/journey/:visitorId` | admin | per-visitor timeline |
+| `GET` | `/ees/visitors/recent` | admin | recent events |
+| `GET` | `/ees/visitors/export.csv` | admin | CSV export |
+| `GET` | `/ees/goals` | admin | list conversion goals |
+| `POST` | `/ees/goals` | admin | create a goal |
+| `PUT` | `/ees/goals/:id` | admin | update a goal |
+| `DELETE` | `/ees/goals/:id` | admin | delete a goal |
+| `GET` | `/ees/goals/stats` | admin | per-goal completion stats |
+| `GET` | `/ees/visitors/status` | admin | version + update status |
 
-\* Required for production use. Buy at
-`https://elite-software.co.uk/licence/buy/vendure-plugin-visitor-analytics`.
+## Documentation
+
+User manual + screenshots:
+[huloglobal.com/vendure-plugins/visitor-analytics/docs/](https://huloglobal.com/vendure-plugins/visitor-analytics/docs/)
+
+## Lost your licence key?
+
+Re-send every active key on file at
+[elite.charity/licence/forgot](https://elite.charity/licence/forgot).
 
 ## Licence
 
-Commercial — see [LICENSE](./LICENSE). Requires an active subscription
-($9.95/mo) or a perpetual licence.
+Commercial. Buy at
+[elite.charity/licence/buy/vendure-plugin-visitor-analytics](https://elite.charity/licence/buy/vendure-plugin-visitor-analytics).
