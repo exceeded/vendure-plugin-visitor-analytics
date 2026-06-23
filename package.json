@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@huloglobal/vendure-licence-sdk": "^0.4.0",
-    "ua-parser-js": "^1.0.37",
+    "ua-parser-js": "^2.0.10",
     "geolite2-redist": "^3.1.0",
     "@maxmind/geoip2-node": "^5.0.0",
     "graphql-tag": "^2.12.7"
