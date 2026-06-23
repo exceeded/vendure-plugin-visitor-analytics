@@ -1,8 +1,9 @@
 import { PluginCommonModule, Type, VendurePlugin } from '@vendure/core';
-import { RetentionOptions, RevocationChecker, UpdateChecker, verifyLicence } from '@huloglobal/vendure-licence-sdk';
+import { fingerprintPublicKey, Heartbeat, LicenceStatus, RetentionOptions, RevocationChecker, UpdateChecker, verifyLicence } from '@huloglobal/vendure-licence-sdk';
 import { ConversionGoal } from './conversion-goal.entity';
 import { VisitorEvent } from './visitor-event.entity';
 import { VisitorTrackingService } from './visitor-tracking.service';
+import { VisitorAnalyticsAdminResolver, visitorAnalyticsAdminApiSchema } from './admin-api';
 import { VisitorTrackingController } from './visitor-tracking.controller';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -93,18 +94,25 @@ export function getOptions(): typeof DEFAULT_OPTIONS & VisitorAnalyticsPluginOpt
  */
 @VendurePlugin({
     imports: [PluginCommonModule],
-    providers: [VisitorTrackingService],
+    providers: [VisitorTrackingService, VisitorAnalyticsAdminResolver],
     controllers: [VisitorTrackingController],
     entities: [VisitorEvent, ConversionGoal],
     compatibility: '^3.0.0',
+    adminApiExtensions: {
+        schema: visitorAnalyticsAdminApiSchema,
+        resolvers: [VisitorAnalyticsAdminResolver],
+    },
 })
 export class VisitorAnalyticsPlugin {
     private static revocation: RevocationChecker | null = null;
     private static updateChecker: UpdateChecker | null = null;
+    private static heartbeat: Heartbeat | null = null;
+    private static licenceStatus: LicenceStatus | null = null;
 
     static getUpdateChecker(): UpdateChecker | null { return VisitorAnalyticsPlugin.updateChecker; }
     static getPackageVersion(): string { return PKG_VERSION; }
     static getPackageName(): string { return PKG_NAME; }
+    static getLicenceStatus(): LicenceStatus | null { return VisitorAnalyticsPlugin.licenceStatus; }
 
     static init(options: VisitorAnalyticsPluginOptions): Type<VisitorAnalyticsPlugin> {
         cachedOptions = options;
@@ -127,13 +135,24 @@ export class VisitorAnalyticsPlugin {
             publicKey: HULO_PUBLIC_KEY,
             revokedIds: VisitorAnalyticsPlugin.revocation.getRevokedIds(),
         });
+        VisitorAnalyticsPlugin.licenceStatus = status;
 
         if (!status.valid) {
             // eslint-disable-next-line no-console
             console.warn(
                 `[@huloglobal/vendure-plugin-visitor-analytics] ${status.message}` +
-                ` — Running in unlicensed mode (ingest works, admin dashboards disabled). Purchase a key at https://elite-software.co.uk/licence/buy/${PLUGIN_ID}`,
+                ` — Running in FREE tier: 100 events/day cap, conversion goals disabled, live SSE feed disabled, CSV export disabled. Buy a licence at https://elite.charity/licence/buy/${PLUGIN_ID}`,
             );
+        }
+
+        if (!VisitorAnalyticsPlugin.heartbeat) {
+            VisitorAnalyticsPlugin.heartbeat = new Heartbeat({
+                packageName: PKG_NAME,
+                packageVersion: PKG_VERSION,
+                licenceKey: options.licenceKey,
+                publicKeyFingerprint: fingerprintPublicKey(HULO_PUBLIC_KEY),
+            });
+            VisitorAnalyticsPlugin.heartbeat.start();
         }
 
         return VisitorAnalyticsPlugin;

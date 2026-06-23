@@ -411,13 +411,19 @@ interface VisitorProfile {
 
         /* Mobile under 768px */
         @media (max-width: 767px) {
+            /* 44px tap targets on every interactive element in our component */
+            :host button, :host .btn { min-height: 40px; }
+            :host vdr-action-bar { flex-wrap: wrap; gap: 6px; }
+            :host vdr-action-bar button { min-height: 40px; padding: 6px 12px; }
+            .range { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 8px 0; }
+            .range .btn { min-height: 40px; min-width: 48px; padding: 6px 12px; font-size: 13px; }
             .summary-row { gap: 8px; }
             .summary-card { min-width: 0; flex-basis: calc(50% - 4px); padding: 12px 14px; }
             .summary-card .num { font-size: 20px; }
             .range { display: block; margin: 8px 0; }
             .two-col { grid-template-columns: 1fr; }
             .funnel-row { grid-template-columns: 1fr; gap: 4px; padding: 8px 0; border-bottom: 1px solid var(--color-component-border-200); }
-            table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap; }
+            table { white-space: nowrap; }
             .profile-grid, .profile-grid.four { grid-template-columns: 1fr 1fr; }
             .drawer { width: 100% !important; max-width: 100% !important; }
             .update-banner { flex-direction: column; align-items: flex-start; }

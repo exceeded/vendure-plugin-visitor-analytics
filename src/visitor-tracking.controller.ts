@@ -1,6 +1,8 @@
 import { Body, Controller, Delete, Get, OnApplicationBootstrap, OnModuleDestroy, Param, Post, Put, Req, Res } from '@nestjs/common';
 import {
     applySecurityHeaders,
+    isLicensed,
+    premiumFeatureError,
     RateLimiter,
     signValue,
     startRetentionSweeper,
@@ -17,6 +19,31 @@ const COOKIE_VISITOR = 'ees_vid';
 const COOKIE_SESSION = 'ees_sid';
 const VISITOR_TTL_DAYS = 730;   // ~2 years
 const SESSION_IDLE_MIN = 30;    // 30-minute idle session timeout
+
+/** Free-tier daily event cap. 100 / UTC day across the whole install
+ *  — enough to evaluate, not enough to run a real store on. The
+ *  counter is in-memory only (acceptable: free-tier installs aren't
+ *  multi-instance anyway, and resetting on restart works in the
+ *  customer's favour). */
+const FREE_TIER_DAILY_CAP = 100;
+const freeTierBudget = (() => {
+    let day = '';
+    let used = 0;
+    return {
+        consume(n: number): boolean {
+            const today = new Date().toISOString().slice(0, 10);
+            if (today !== day) { day = today; used = 0; }
+            if (used + n > FREE_TIER_DAILY_CAP) return false;
+            used += n;
+            return true;
+        },
+        snapshot(): { day: string; used: number; cap: number } {
+            const today = new Date().toISOString().slice(0, 10);
+            if (today !== day) return { day: today, used: 0, cap: FREE_TIER_DAILY_CAP };
+            return { day, used, cap: FREE_TIER_DAILY_CAP };
+        },
+    };
+})();
 
 function requireAdmin(ctx: RequestContext, res: Response): boolean {
     if (!ctx?.activeUserId) {
@@ -106,6 +133,16 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         if (req.method === 'OPTIONS') return res.status(204).end();
 
         if (this.rateLimited(req, res, 'track')) return;
+
+        // Tier-gate: unlicensed installs are capped at 100 events / UTC day.
+        // Once the cap is hit, /track returns 200 with `skipped: 'free-tier-cap'`
+        // so the storefront's beacon doesn't surface errors to end users.
+        if (!isLicensed(VisitorAnalyticsPlugin.getLicenceStatus())) {
+            const eventsLen = Array.isArray((body || {}).events) ? body.events.length : 1;
+            if (!freeTierBudget.consume(eventsLen)) {
+                return res.json({ stored: 0, skipped: 'free-tier-cap', cap: FREE_TIER_DAILY_CAP });
+            }
+        }
 
         const opts = getOptions();
 
@@ -447,6 +484,9 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
     @Get('visitors/live')
     async live(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
         if (!requireAdmin(ctx, res)) return;
+        if (!isLicensed(VisitorAnalyticsPlugin.getLicenceStatus())) {
+            return res.status(402).json(premiumFeatureError('vendure-plugin-visitor-analytics'));
+        }
 
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -735,6 +775,9 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
     @Post('goals')
     async createGoal(@Ctx() ctx: RequestContext, @Body() body: any, @Res() res: Response) {
         if (!requireAdmin(ctx, res)) return;
+        if (!isLicensed(VisitorAnalyticsPlugin.getLicenceStatus())) {
+            return res.status(402).json(premiumFeatureError('vendure-plugin-visitor-analytics'));
+        }
         const repo = this.connection.rawConnection.getRepository(ConversionGoal);
         const row = repo.create({
             channelId: Number(body?.channelId) || 1,
@@ -808,6 +851,9 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
     @Get('visitors/export.csv')
     async exportCsv(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
         if (!requireAdmin(ctx, res)) return;
+        if (!isLicensed(VisitorAnalyticsPlugin.getLicenceStatus())) {
+            return res.status(402).json(premiumFeatureError('vendure-plugin-visitor-analytics'));
+        }
         const days = Math.min(Math.max(parseInt(String((req.query as any).days || '7'), 10) || 7, 1), 90);
         const rows = await this.connection.rawConnection.query(
             `SELECT createdAt, visitorId, sessionId, customerId, channelId,
