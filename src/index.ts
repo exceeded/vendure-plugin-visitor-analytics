@@ -12,6 +12,6 @@ export {
     CartSnapshotMeta,
     AbandonmentOptions,
 } from './abandoned-cart.service';
-export { RecommendationsService } from './recommendations.service';
+export { RecommendationsService, RecommendedProduct } from './recommendations.service';
 export { SearchAnalyticsService } from './search-analytics.service';
 export { JourneyBuffsService } from './journey-buffs.service';
