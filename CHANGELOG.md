@@ -5,6 +5,26 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.3] — 2026-07-04
+
+### Added
+- Recommendation endpoints (`trending`, `also-viewed`, `personal`)
+  now enrich every row with `productName` and `productSlug` via a
+  single bulk lookup against `product_translation`. English
+  translation preferred for multi-locale stores; single-locale
+  installs land on their only translation. Soft-deleted products
+  are excluded.
+- New exported type: `RecommendedProduct`.
+
+### Changed
+- Response row shape is now
+  `{ productId, productName, productSlug, score, views }` — the
+  addition is backwards-compatible for consumers that only read
+  `productId`, but callers that render the row can now show the
+  name without a second round-trip. Admin UI updated in the
+  parallel `ee.software` commit to render "Windows Server 2022
+  Datacenter #42" instead of just "#42".
+
 ## [0.8.2] — 2026-07-04
 
 ### Documentation
@@ -256,6 +276,7 @@ adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - Licence verification via `@huloglobal/vendure-licence-sdk` with
   revocation polling.
 
+[0.8.3]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.8.3
 [0.8.2]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.8.2
 [0.8.1]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.8.1
 [0.8.0]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.8.0
