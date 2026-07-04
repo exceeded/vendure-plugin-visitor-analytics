@@ -1,5 +1,5 @@
 import { PluginCommonModule, Type, VendurePlugin } from '@vendure/core';
-import { fingerprintPublicKey, Heartbeat, LicenceStatus, RetentionOptions, RevocationChecker, UpdateChecker, verifyLicence } from '@huloglobal/vendure-licence-sdk';
+import { fingerprintPublicKey, Heartbeat, LicenceStatus, RetentionOptions, RevocationChecker, UpdateChecker, verifyLicence, warnIfIncompatibleVendure } from '@huloglobal/vendure-licence-sdk';
 import { ConversionGoal } from './conversion-goal.entity';
 import { VisitorEvent } from './visitor-event.entity';
 import { VisitorTrackingService } from './visitor-tracking.service';
@@ -116,6 +116,14 @@ export class VisitorAnalyticsPlugin {
 
     static init(options: VisitorAnalyticsPluginOptions): Type<VisitorAnalyticsPlugin> {
         cachedOptions = options;
+
+        // Warn if @vendure/core at runtime is outside the tested
+        // range. Non-fatal — the plugin boots and works.
+        warnIfIncompatibleVendure({
+            pluginPackageName: PKG_NAME,
+            pluginPackageVersion: PKG_VERSION,
+            supportedRange: { min: '3.5.0', max: '4.0.0' },
+        });
 
         if (!VisitorAnalyticsPlugin.revocation) {
             VisitorAnalyticsPlugin.revocation = new RevocationChecker(REVOCATION_URL);
