@@ -2,9 +2,20 @@ import { PluginCommonModule, Type, VendurePlugin } from '@vendure/core';
 import { fingerprintPublicKey, Heartbeat, LicenceStatus, RetentionOptions, RevocationChecker, UpdateChecker, verifyLicence, warnIfIncompatibleVendure } from '@huloglobal/vendure-licence-sdk';
 import { ConversionGoal } from './conversion-goal.entity';
 import { VisitorEvent } from './visitor-event.entity';
+import { AbandonedCart } from './abandoned-cart.entity';
+import { ProductCoView } from './product-co-view.entity';
 import { VisitorTrackingService } from './visitor-tracking.service';
+import { AbandonedCartService, AbandonmentOptions } from './abandoned-cart.service';
+import { RecommendationsService } from './recommendations.service';
+import { SearchAnalyticsService } from './search-analytics.service';
+import { JourneyBuffsService } from './journey-buffs.service';
+import { AbandonedCartScanner } from './abandoned-cart.scanner';
 import { VisitorAnalyticsAdminResolver, visitorAnalyticsAdminApiSchema } from './admin-api';
 import { VisitorTrackingController } from './visitor-tracking.controller';
+import { AbandonedCartController } from './abandoned-cart.controller';
+import { RecommendationsController } from './recommendations.controller';
+import { SearchAnalyticsController } from './search-analytics.controller';
+import { JourneyBuffsController } from './journey-buffs.controller';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const PKG_VERSION: string = require('../package.json').version;
@@ -51,6 +62,12 @@ export interface VisitorAnalyticsPluginOptions {
     // ── Retention ───────────────────────────────────────────────────────
     /** Auto-prune `visitor_event` rows older than `days` days. */
     retention?: RetentionOptions;
+
+    // ── Cart abandonment ────────────────────────────────────────────────
+    /** Options for the abandoned-cart feature. Storefront must fire
+     *  `cart_snapshot` custom events for anything to be detected. See
+     *  the README for the recommended storefront helper. */
+    abandonment?: AbandonmentOptions;
 }
 
 const HULO_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
@@ -94,9 +111,23 @@ export function getOptions(): typeof DEFAULT_OPTIONS & VisitorAnalyticsPluginOpt
  */
 @VendurePlugin({
     imports: [PluginCommonModule],
-    providers: [VisitorTrackingService, VisitorAnalyticsAdminResolver],
-    controllers: [VisitorTrackingController],
-    entities: [VisitorEvent, ConversionGoal],
+    providers: [
+        VisitorTrackingService,
+        VisitorAnalyticsAdminResolver,
+        AbandonedCartService,
+        RecommendationsService,
+        SearchAnalyticsService,
+        JourneyBuffsService,
+        AbandonedCartScanner,
+    ],
+    controllers: [
+        VisitorTrackingController,
+        AbandonedCartController,
+        RecommendationsController,
+        SearchAnalyticsController,
+        JourneyBuffsController,
+    ],
+    entities: [VisitorEvent, ConversionGoal, AbandonedCart, ProductCoView],
     compatibility: '^3.0.0',
     adminApiExtensions: {
         schema: visitorAnalyticsAdminApiSchema,

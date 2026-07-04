@@ -5,6 +5,87 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-07-04
+
+### Added
+
+**Cart abandonment — end-to-end.**
+- New `AbandonedCart` entity, keyed on session id. One row per
+  abandoned session, refreshed in place until it either converts
+  (order placed) or expires (recovery window elapses).
+- `AbandonedCartService.scan()` — periodic sweep finds sessions with
+  `cart_snapshot` events but no `checkout_completed` in the
+  abandonment window (default 30 min). Auto-promotes previously
+  abandoned rows to `converted` when the customer later checks out.
+- Ships with a boot-time timer (worker-only, 5-minute cadence).
+  Idempotent — safe to horizontally scale, only the worker runs it.
+- Signed recovery links — `POST /ees/abandoned-carts/:id/recovery-link`
+  returns a time-bounded opaque token the storefront exchanges via
+  `GET /ees/recover-cart?t=…` to rebuild the exact cart. Storefront
+  never sees the underlying items until the token is presented.
+- Slack notification for high-value abandonments — configurable
+  threshold and webhook via the `abandonment` plugin option.
+- Admin API:
+  - `GET  /ees/abandoned-carts` — paginated list with status,
+    value and email filters.
+  - `GET  /ees/abandoned-carts/summary` — totals, recovery rate,
+    recovered vs. lost value in the window.
+  - `GET  /ees/abandoned-carts/:id` — detail incl. parsed items.
+  - `POST /ees/abandoned-carts/:id/status` — mark recovered /
+    dismissed / re-open.
+  - `GET  /ees/abandoned-carts/export.csv` — CSV export.
+
+**Co-view product recommendations.**
+- New `ProductCoView` aggregate table. Scanner walks recent
+  `product_view` events per session, extracts every ordered pair,
+  and increments a per-triple counter. Bounded to 20 events per
+  session so runaway bot sessions can't skew the table.
+- Denormalised — both `(A, B)` and `(B, A)` stored — so read-side
+  lookups are one indexed scan.
+- Runs every 6 hours on the worker; also exposed as
+  `GET /ees/recommendations/aggregate-now` for admins to kick a
+  fresh run after a data backfill.
+- Public read endpoints (safe from the storefront):
+  - `GET /ees/recommendations/also-viewed?productId=…` — the
+    "customers who viewed X also viewed…" rail on a product page.
+  - `GET /ees/recommendations/personal?visitorId=…` — personalised
+    recs for a returning visitor, from their last 10 product views
+    over 30 days. Excludes seeds.
+  - `GET /ees/recommendations/trending?hours=24` — most-viewed
+    products in the window. Reflects real interest, not search-
+    console clicks.
+
+**Site search analytics.**
+- Reads back over `visitor_event` where the storefront has fired
+  `hulo.search(query, resultsCount)`. Zero new schema.
+- `GET /ees/search-analytics/top` — top queries by volume with
+  average results count.
+- `GET /ees/search-analytics/no-results` — top zero-result queries.
+  Direct catalogue-gap intel.
+- `GET /ees/search-analytics/conversion` — of sessions that
+  searched, what fraction went on to fire `add_to_cart`.
+
+**Journey drawer buffs.**
+- Rage-click + dead-click aggregation, keyed on URL. Store-wide
+  hot-spot lists for pages where visitors are stuck or frustrated.
+- Per-visitor session summary with a heuristic `intent` label
+  (`purchase` / `abandon` / `frustrate` / `consider` / `browse` /
+  `bounce`) computed from event history — one glance per session
+  in the Journey drawer instead of scrolling event rows.
+
+**Storefront helper events (documented in the README).**
+- `hulo.cartSnapshot({ currency, totalMinor, itemCount, items, email })`
+- `hulo.productView(productId, productVariantId?)`
+- `hulo.search(query, resultsCount)`
+- `hulo.rageClick(url, selector?)` / `hulo.deadClick(url, selector)`
+- `hulo.checkoutCompleted()`
+- All flow into the existing `POST /ees/track` endpoint with a
+  standard shape, so admins can also fire them from any language.
+
+### Changed
+- `checkout_completed` is now a first-class recognised event type
+  — the abandonment scanner uses it to auto-close matched rows.
+
 ## [0.7.0] — 2026-07-04
 
 ### Added
@@ -149,6 +230,7 @@ adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - Licence verification via `@huloglobal/vendure-licence-sdk` with
   revocation polling.
 
+[0.8.0]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.8.0
 [0.7.0]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.7.0
 [0.6.0]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.6.0
 [0.5.0]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.5.0
