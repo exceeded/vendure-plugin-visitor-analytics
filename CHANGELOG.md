@@ -5,6 +5,26 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.4] — 2026-07-04
+
+### Added
+- `GET /ees/abandoned-carts` now includes each cart's parsed
+  `items` array plus a short server-rendered `itemsPreview`
+  string ("Windows 10 Pro, Office 2021 Pro +2 more"), sorted by
+  quantity descending. Admin can see WHAT was abandoned without
+  clicking through to the detail endpoint.
+- `GET /ees/abandoned-carts/:id` fills in missing `name` (and
+  `productId` when it can) on every item by looking up
+  `product_variant_translation` / `product_translation`. Only
+  fills where the storefront snapshot didn't already capture a
+  name — a stored name at cart time is more accurate than a live
+  catalog lookup (products can be renamed after abandonment).
+
+### Changed
+- List endpoint drops the raw `itemsJson` string from its
+  response — clients that need the JSON blob can hit the detail
+  endpoint. Response payload stays lean.
+
 ## [0.8.3] — 2026-07-04
 
 ### Added
@@ -276,6 +296,7 @@ adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - Licence verification via `@huloglobal/vendure-licence-sdk` with
   revocation polling.
 
+[0.8.4]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.8.4
 [0.8.3]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.8.3
 [0.8.2]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.8.2
 [0.8.1]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.8.1

@@ -48,8 +48,12 @@ export class AbandonedCartController {
         const conn = (this.service as any).connection.rawConnection;
         const [rows, totalRow] = await Promise.all([
             conn.query(
+                // itemsJson included so the list can render a preview of the
+                // first few item names alongside the count. Slightly heavier
+                // than the previous SELECT but capped by LIMIT and paginated,
+                // so the payload growth stays proportional to the page size.
                 `SELECT id, sessionId, visitorId, customerId, currency, totalMinor, itemCount,
-                        email, status, abandonedAt, recoveredAt, notificationSent,
+                        itemsJson, email, status, abandonedAt, recoveredAt, notificationSent,
                         utmSource, utmMedium, countryCode
                  FROM abandoned_cart
                  ${clause}
@@ -59,11 +63,42 @@ export class AbandonedCartController {
             ),
             conn.query(`SELECT COUNT(*) AS c FROM abandoned_cart ${clause}`, params),
         ]);
+        // Enrich each row with:
+        //   - items: parsed array (never null; empty array if malformed)
+        //   - itemsPreview: short human-readable summary
+        //     ("Windows 11 Pro, Office 2021 +1 more")
+        // The preview is a rendering aid — sorted by qty desc so the
+        // biggest lines lead, truncated at 3 names + "+N more".
+        for (const r of rows) {
+            let items: any[] = [];
+            try { items = JSON.parse(r.itemsJson || '[]'); } catch {}
+            r.items = items;
+            r.itemsPreview = this.buildItemsPreview(items);
+            // Drop the raw JSON blob from the list response so the payload
+            // stays lean — clients that need it can hit the detail endpoint.
+            delete r.itemsJson;
+        }
         return {
             items: rows,
             total: Number(totalRow?.[0]?.c || 0),
             take, skip,
         };
+    }
+
+    /** Short human summary of a parsed itemsJson array. */
+    private buildItemsPreview(items: any[]): string {
+        if (!Array.isArray(items) || !items.length) return '';
+        // Sort a shallow copy so we don't mutate the response body.
+        const sorted = [...items].sort(
+            (a, b) => Number(b?.qty || 0) - Number(a?.qty || 0),
+        );
+        const named = sorted
+            .map(i => String(i?.name || '').trim())
+            .filter(Boolean);
+        if (!named.length) return `${items.length} item(s)`;
+        const head = named.slice(0, 3).join(', ');
+        const remaining = named.length - 3;
+        return remaining > 0 ? `${head} +${remaining} more` : head;
     }
 
     @Get('abandoned-carts/summary')
@@ -149,7 +184,96 @@ export class AbandonedCartController {
         const r = rows[0];
         let items: any[] = [];
         try { items = JSON.parse(r.itemsJson || '[]'); } catch {}
-        return { ...r, items };
+        // Fill in missing product/variant names by looking them up in
+        // Vendure. The storefront snapshot usually captures `name`
+        // already; this is a fallback for older data, snapshots taken
+        // before the product had a translation, or third-party
+        // integrations that fire cart_snapshot without a name field.
+        const enrichedItems = await this.enrichItemsWithNames(items);
+        return {
+            ...r,
+            items: enrichedItems,
+            itemsPreview: this.buildItemsPreview(enrichedItems),
+        };
+    }
+
+    /**
+     * Fill in missing `name` (and, when possible, `productId`) on each
+     * cart item by looking up the variant / product from Vendure.
+     * Untouched if the item already has a name — the storefront's
+     * snapshot at cart time is usually more accurate than a live
+     * catalog lookup (a name in Vendure may have changed since the
+     * cart was abandoned).
+     */
+    private async enrichItemsWithNames(items: any[]): Promise<any[]> {
+        if (!Array.isArray(items) || !items.length) return items || [];
+        const conn = (this.service as any).connection.rawConnection;
+        const variantIds = new Set<number>();
+        const productIds = new Set<number>();
+        for (const it of items) {
+            if (it?.name) continue;
+            const vid = Number(it?.variantId);
+            const pid = Number(it?.productId);
+            if (Number.isFinite(vid) && vid > 0) variantIds.add(vid);
+            if (Number.isFinite(pid) && pid > 0) productIds.add(pid);
+        }
+        const variantNames = new Map<number, { name: string; productId: number }>();
+        const productNames = new Map<number, string>();
+        if (variantIds.size) {
+            try {
+                const vids = Array.from(variantIds);
+                const ph = vids.map(() => '?').join(',');
+                const rows: any[] = await conn.query(
+                    `SELECT pv.id AS variantId, pv.productId AS productId, pvt.name AS name
+                     FROM product_variant pv
+                     LEFT JOIN product_variant_translation pvt ON pvt.baseId = pv.id
+                     WHERE pv.id IN (${ph})
+                     ORDER BY pv.id, pvt.languageCode = 'en' DESC`,
+                    vids,
+                );
+                for (const row of rows) {
+                    const vid = Number(row.variantId);
+                    if (variantNames.has(vid)) continue;
+                    variantNames.set(vid, {
+                        name: String(row.name || ''),
+                        productId: Number(row.productId),
+                    });
+                }
+            } catch { /* fail-open */ }
+        }
+        if (productIds.size) {
+            try {
+                const pids = Array.from(productIds);
+                const ph = pids.map(() => '?').join(',');
+                const rows: any[] = await conn.query(
+                    `SELECT baseId AS productId, name FROM product_translation
+                     WHERE baseId IN (${ph})
+                     ORDER BY baseId, languageCode = 'en' DESC`,
+                    pids,
+                );
+                for (const row of rows) {
+                    const pid = Number(row.productId);
+                    if (productNames.has(pid)) continue;
+                    productNames.set(pid, String(row.name || ''));
+                }
+            } catch { /* fail-open */ }
+        }
+        return items.map(it => {
+            if (it?.name) return it;
+            const vid = Number(it?.variantId);
+            const vinfo = variantNames.get(vid);
+            if (vinfo?.name) {
+                return {
+                    ...it,
+                    name: vinfo.name,
+                    productId: it.productId || vinfo.productId,
+                };
+            }
+            const pid = Number(it?.productId);
+            const pname = productNames.get(pid);
+            if (pname) return { ...it, name: pname };
+            return it;
+        });
     }
 
     @Post('abandoned-carts/:id/recovery-link')
