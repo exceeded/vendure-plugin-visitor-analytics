@@ -5,6 +5,32 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] — 2026-07-04
+
+### Documentation
+- README rewritten to cover every 0.8.x feature: the drop-in
+  `/ees/hulo.js` storefront helper, cart-abandonment configuration
+  and lifecycle, recommendation endpoints, search analytics,
+  journey drawer buffs. Includes a walkthrough of the
+  storefront-side `/cart/restore` route customers implement to
+  consume recovery links.
+- Endpoints table split into Public (browser-safe, CORS-permissive)
+  vs Admin, with every 0.8.0-introduced endpoint marked inline.
+- No runtime changes — bumped to ship the new README with the npm
+  tarball.
+
+## [0.8.1] — 2026-07-04
+
+### Added
+- `/ees/hulo.js` — the plugin now serves a drop-in typed storefront
+  helper at this path. One `<script src>` tag and every event API
+  (`hulo.cartSnapshot`, `hulo.productView`, `hulo.search`,
+  `hulo.checkoutCompleted`, `hulo.restoreCart`) is available on
+  `window.hulo`. Handles batching, `sendBeacon` on unload, and
+  installs auto rage-click + dead-click detectors. Served with a
+  10-minute browser TTL + 24-hour stale-while-revalidate and
+  permissive CORS so it works cross-origin from any storefront.
+
 ## [0.8.0] — 2026-07-04
 
 ### Added
@@ -230,6 +256,8 @@ adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - Licence verification via `@huloglobal/vendure-licence-sdk` with
   revocation polling.
 
+[0.8.2]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.8.2
+[0.8.1]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.8.1
 [0.8.0]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.8.0
 [0.7.0]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.7.0
 [0.6.0]: https://github.com/exceeded/vendure-plugin-visitor-analytics/releases/tag/v0.6.0

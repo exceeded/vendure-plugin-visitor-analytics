@@ -16,6 +16,7 @@ import { AbandonedCartController } from './abandoned-cart.controller';
 import { RecommendationsController } from './recommendations.controller';
 import { SearchAnalyticsController } from './search-analytics.controller';
 import { JourneyBuffsController } from './journey-buffs.controller';
+import { StorefrontHelperController } from './storefront-helper.controller';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const PKG_VERSION: string = require('../package.json').version;
@@ -126,6 +127,7 @@ export function getOptions(): typeof DEFAULT_OPTIONS & VisitorAnalyticsPluginOpt
         RecommendationsController,
         SearchAnalyticsController,
         JourneyBuffsController,
+        StorefrontHelperController,
     ],
     entities: [VisitorEvent, ConversionGoal, AbandonedCart, ProductCoView],
     compatibility: '^3.0.0',
