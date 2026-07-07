@@ -41,20 +41,64 @@ interface VisitorProfile {
     selector: 'ees-visitors',
     standalone: false,
     template: `
+        <!-- ── HULO brand hero — shared pattern across every HULO plugin. -->
         <vdr-page-block>
-            <vdr-action-bar>
-                <vdr-ab-left><h2>Visitor journey</h2></vdr-ab-left>
-                <vdr-ab-right>
+            <div class="hulo-hero">
+                <div class="hulo-hero-logo" aria-hidden="true">
+                    <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+                        <rect width="64" height="64" rx="14" fill="#0f1419"/>
+                        <rect x="14" y="34" width="7" height="14" rx="1.5" fill="#ffffff"/>
+                        <rect x="24" y="28" width="7" height="20" rx="1.5" fill="#ffffff"/>
+                        <rect x="34" y="22" width="7" height="26" rx="1.5" fill="#ffffff"/>
+                        <rect x="44" y="16" width="7" height="32" rx="1.5" fill="#ffffff"/>
+                        <polyline points="17.5,34 27.5,28 37.5,22 47.5,16" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <circle cx="47.5" cy="16" r="2.5" fill="#f59e0b"/>
+                    </svg>
+                </div>
+                <div class="hulo-hero-text">
+                    <h2 class="hulo-hero-title">Visitor journey</h2>
+                    <p class="hulo-hero-sub">Live visitor count plus the funnel from landing → product → cart → checkout → order. Change the date range on the right.</p>
+                </div>
+                <div class="hulo-hero-actions">
                     <span class="range">
-                        Range:
                         <button class="btn btn-sm btn-link" *ngFor="let d of [7, 30, 90, 365]"
                             (click)="setDays(d)" [class.active]="days === d">{{ d }}d</button>
                     </span>
+                    <button class="btn btn-link hulo-help-btn" (click)="helpOpen = !helpOpen" [attr.aria-expanded]="helpOpen">
+                        <clr-icon shape="help"></clr-icon><span>Help</span>
+                    </button>
                     <button class="btn btn-link" (click)="loadAll()" [disabled]="loading">
                         <clr-icon shape="refresh"></clr-icon> Refresh
                     </button>
-                </vdr-ab-right>
-            </vdr-action-bar>
+                </div>
+            </div>
+        </vdr-page-block>
+
+        <vdr-page-block *ngIf="helpOpen">
+            <div class="hulo-help-drawer">
+                <div class="hulo-help-grid">
+                    <div class="hulo-help-card">
+                        <div class="hulo-help-num">1</div>
+                        <h4>Add the one-liner script to your storefront</h4>
+                        <p>Drop <code>&lt;script src="/ees/hulo.js"&gt;</code> in your site head. It handles session + page tracking automatically.</p>
+                    </div>
+                    <div class="hulo-help-card">
+                        <div class="hulo-help-num">2</div>
+                        <h4>Watch the funnel</h4>
+                        <p>Each stage shows visitors + drop-off %. Big gaps usually point to a specific broken UX or slow page.</p>
+                    </div>
+                    <div class="hulo-help-card">
+                        <div class="hulo-help-num">3</div>
+                        <h4>Compare over time</h4>
+                        <p>Change the 7d / 30d / 90d / 365d range in the header. All numbers, series and top-country lists follow.</p>
+                    </div>
+                </div>
+                <div class="hulo-help-links">
+                    <a href="https://huloglobal.com/vendure-plugins/visitor-analytics/docs/" target="_blank">Full docs ↗</a>
+                    <a href="https://huloglobal.com/vendure-plugins/visitor-analytics/" target="_blank">Plugin page ↗</a>
+                    <a href="mailto:support@huloglobal.com">Email support</a>
+                </div>
+            </div>
         </vdr-page-block>
 
         <vdr-page-block *ngIf="updateBanner">
@@ -398,6 +442,43 @@ interface VisitorProfile {
     styles: [`
         :host { color: var(--color-text-100, inherit); display: block; }
 
+        /* ── HULO shared hero + help pattern ─────────────────────── */
+        .hulo-hero {
+            display: flex; align-items: center; gap: 18px;
+            padding: 20px 22px; border-radius: 14px;
+            background: linear-gradient(135deg, #0f1419 0%, #1e293b 100%);
+            color: #fff;
+            box-shadow: 0 1px 3px rgba(15,23,42,.15), 0 8px 24px rgba(15,23,42,.08);
+        }
+        .hulo-hero-logo { flex: 0 0 auto; width: 56px; height: 56px; }
+        .hulo-hero-logo svg { width: 100%; height: 100%; display: block; }
+        .hulo-hero-text { flex: 1 1 auto; min-width: 0; }
+        .hulo-hero-title { color: #fff; font-size: 22px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+        .hulo-hero-sub { color: #cbd5e1; font-size: 13px; line-height: 1.5; margin: 4px 0 0; max-width: 640px; }
+        .hulo-hero-actions { display: flex; gap: 6px; align-items: center; flex: 0 0 auto; }
+        .hulo-hero-actions .btn { color: #f8fafc; }
+        .hulo-hero-actions .btn:hover { color: #f59e0b; }
+        .hulo-help-btn clr-icon { margin-right: 4px; }
+        .hulo-help-drawer {
+            background: #fffbeb; border: 1px solid #fde68a; border-radius: 12px;
+            padding: 20px 22px; color: #451a03;
+        }
+        .hulo-help-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+        .hulo-help-card { background: #ffffff; border-radius: 10px; padding: 16px; }
+        .hulo-help-num { width: 24px; height: 24px; border-radius: 999px;
+            background: #f59e0b; color: #fff; font-weight: 700; font-size: 13px;
+            display: grid; place-items: center; margin-bottom: 8px; }
+        .hulo-help-card h4 { margin: 0 0 4px; font-size: 14px; color: #0f172a; }
+        .hulo-help-card p { margin: 0; font-size: 13px; line-height: 1.5; color: #475569; }
+        .hulo-help-card code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+        .hulo-help-links { margin-top: 16px; padding-top: 14px; border-top: 1px solid #fde68a; display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; }
+        .hulo-help-links a { color: #b45309; text-decoration: none; font-weight: 600; }
+        .hulo-help-links a:hover { text-decoration: underline; }
+        @media (max-width: 640px) {
+            .hulo-hero { flex-wrap: wrap; }
+            .hulo-hero-actions { width: 100%; justify-content: flex-end; }
+        }
+
         .update-banner {
             display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap;
             padding: 12px 16px; border-radius: 8px;
@@ -588,6 +669,8 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     profileLoading = false;
 
     updateBanner: { packageName: string; current: string; latest: string; isMajor: boolean } | null = null;
+    /** Toggles the shared HULO help drawer under the hero. */
+    helpOpen = false;
     private dismissKey = 'huloglobal-visitor-analytics-update-dismissed';
 
     constructor(
