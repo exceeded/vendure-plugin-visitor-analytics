@@ -54,7 +54,12 @@ export class AbandonedCartController {
                 // so the payload growth stays proportional to the page size.
                 `SELECT id, sessionId, visitorId, customerId, currency, totalMinor, itemCount,
                         itemsJson, email, status, abandonedAt, recoveredAt, notificationSent,
-                        utmSource, utmMedium, countryCode
+                        utmSource, utmMedium, utmCampaign, countryCode, regionCode, city,
+                        ip, ipHash, userAgent, browser, deviceType,
+                        landingUrl, lastKnownUrl, lastKnownReferrer,
+                        pageViews, dwellSeconds,
+                        firstName, lastName, phone,
+                        firstSnapshotAt, lastSnapshotAt
                  FROM abandoned_cart
                  ${clause}
                  ORDER BY abandonedAt DESC

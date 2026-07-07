@@ -22,6 +22,9 @@ export interface CartSnapshotMeta {
     /** Optional — email captured at checkout step 1. */
     email?: string;
     countryCode?: string;
+    /** Optional — city as reported by the storefront (from the
+     *  shipping/billing address if the visitor has filled one). */
+    city?: string;
 }
 
 /**
@@ -100,32 +103,58 @@ export class AbandonedCartService {
         );
         const convertedCount = Number(converted?.affectedRows ?? converted?.[1] ?? 0);
         // 2. Find candidate sessions.
+        // Sub-select the session-level aggregates first (visitor_event
+        // is the largest table on any active install), then LEFT JOIN
+        // `customer` for a name/phone snapshot. That way the customer
+        // lookup runs once per candidate, not once per row.
         const candidates: any[] = await conn.query(
             `SELECT
+                agg.*,
+                c.firstName    AS custFirstName,
+                c.lastName     AS custLastName,
+                c.phoneNumber  AS custPhone
+             FROM (SELECT
                 ve.sessionId,
                 MAX(ve.visitorId) AS visitorId,
                 MAX(ve.customerId) AS customerId,
                 MAX(ve.channelId) AS channelId,
                 MIN(ve.createdAt) AS firstAt,
                 MAX(ve.createdAt) AS lastAt,
+                -- Landing URL: the earliest URL in the session (window-fn
+                -- would be cleaner but MariaDB 10.2+ has FIRST_VALUE via
+                -- SUBSTRING_INDEX(GROUP_CONCAT()) — same trick we use for
+                -- lastMeta below).
+                SUBSTRING_INDEX(GROUP_CONCAT(ve.url ORDER BY ve.createdAt ASC SEPARATOR ''), '', 1) AS firstUrl,
                 MAX(ve.url) AS lastUrl,
+                SUBSTRING_INDEX(GROUP_CONCAT(ve.referrer ORDER BY ve.createdAt ASC SEPARATOR ''), '', 1) AS firstReferrer,
                 MAX(ve.referrer) AS lastReferrer,
                 MAX(ve.utmSource) AS utmSource,
                 MAX(ve.utmMedium) AS utmMedium,
                 MAX(ve.utmCampaign) AS utmCampaign,
                 MAX(ve.country) AS countryCode,
+                MAX(ve.region) AS regionCode,
+                MAX(ve.ip) AS ip,
+                MAX(ve.ipHash) AS ipHash,
+                MAX(ve.userAgent) AS userAgent,
+                MAX(ve.browser) AS browser,
+                -- Total pageview events in the same session — cheap
+                -- "high-intent vs quick-bounce" facet in the admin.
+                SUM(CASE WHEN ve.type = 'pageview' THEN 1 ELSE 0 END) AS pageViews,
                 SUBSTRING_INDEX(GROUP_CONCAT(ve.meta ORDER BY ve.createdAt DESC SEPARATOR '¦'), '¦', 1) AS lastMeta
              FROM visitor_event ve
-             WHERE ve.type = 'event'
-               AND ve.meta LIKE '%"eventType":"cart_snapshot"%'
-               AND ve.createdAt >= (NOW() - INTERVAL 48 HOUR)
-               AND ve.createdAt <= ?
+             WHERE ve.sessionId IN (
+                 SELECT DISTINCT ve0.sessionId
+                 FROM visitor_event ve0
+                 WHERE ve0.type = 'event'
+                   AND ve0.meta LIKE '%"eventType":"cart_snapshot"%'
+                   AND ve0.createdAt >= (NOW() - INTERVAL 48 HOUR)
+                   AND ve0.createdAt <= ?
+             )
                AND NOT EXISTS (
                  SELECT 1 FROM visitor_event ve2
                  WHERE ve2.sessionId = ve.sessionId
                    AND ve2.type = 'event'
                    AND ve2.meta LIKE '%"eventType":"checkout_completed"%'
-                   AND ve2.createdAt >= ve.createdAt
                )
                AND NOT EXISTS (
                  SELECT 1 FROM visitor_event ve3
@@ -135,7 +164,8 @@ export class AbandonedCartService {
                    AND ve3.createdAt > ?
                )
              GROUP BY ve.sessionId
-             LIMIT 500`,
+             LIMIT 500) agg
+             LEFT JOIN customer c ON c.id = agg.customerId AND c.deletedAt IS NULL`,
             [cutoff, cutoff],
         );
 
@@ -155,6 +185,14 @@ export class AbandonedCartService {
                 `SELECT id, status, notificationSent FROM abandoned_cart WHERE sessionId = ? LIMIT 1`,
                 [c.sessionId],
             );
+            // Dwell = last activity − first activity, in seconds.
+            // Denormalised so admin filters + sorting don't need to
+            // recompute on every read.
+            const firstAt = new Date(c.firstAt);
+            const lastAt = new Date(c.lastAt);
+            const dwellSeconds = Math.max(0, Math.round((lastAt.getTime() - firstAt.getTime()) / 1000));
+            const deviceType = classifyDevice(c.userAgent);
+
             if (existing?.length) {
                 // Refresh in place — but never resurrect a converted/dismissed row.
                 if (existing[0].status !== 'abandoned') continue;
@@ -165,13 +203,30 @@ export class AbandonedCartService {
                         emailHash = COALESCE(?, emailHash),
                         lastSnapshotAt = ?, lastKnownUrl = ?,
                         countryCode = COALESCE(?, countryCode),
+                        regionCode = COALESCE(?, regionCode),
+                        ip = COALESCE(?, ip),
+                        ipHash = COALESCE(?, ipHash),
+                        userAgent = COALESCE(?, userAgent),
+                        browser = COALESCE(?, browser),
+                        deviceType = COALESCE(?, deviceType),
+                        pageViews = ?,
+                        dwellSeconds = ?,
+                        firstName = COALESCE(?, firstName),
+                        lastName = COALESCE(?, lastName),
+                        phone = COALESCE(?, phone),
                         updatedAt = NOW(3)
                      WHERE id = ?`,
                     [
                         totalMinor, itemCount, JSON.stringify(items),
                         email, emailHash,
-                        new Date(c.lastAt), c.lastUrl,
+                        lastAt, c.lastUrl,
                         meta.countryCode || c.countryCode,
+                        c.regionCode,
+                        c.ip, c.ipHash,
+                        c.userAgent, c.browser, deviceType,
+                        Number(c.pageViews || 0) || null,
+                        dwellSeconds,
+                        c.custFirstName || null, c.custLastName || null, c.custPhone || null,
                         existing[0].id,
                     ],
                 );
@@ -184,18 +239,31 @@ export class AbandonedCartService {
                     currency, totalMinor, itemCount, itemsJson,
                     email, emailHash,
                     firstSnapshotAt, lastSnapshotAt, abandonedAt,
-                    status, lastKnownUrl, lastKnownReferrer,
+                    status, lastKnownUrl, lastKnownReferrer, landingUrl,
                     utmSource, utmMedium, utmCampaign, countryCode,
+                    regionCode, city, ip, ipHash,
+                    userAgent, browser, deviceType,
+                    pageViews, dwellSeconds,
+                    firstName, lastName, phone,
                     notificationSent, createdAt, updatedAt
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), 'abandoned', ?, ?, ?, ?, ?, ?, 0, NOW(3), NOW(3))`,
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), 'abandoned',
+                           ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?,
+                           ?, ?, ?,
+                           ?, ?,
+                           ?, ?, ?,
+                           0, NOW(3), NOW(3))`,
                 [
                     c.visitorId, c.sessionId, c.customerId, c.channelId || 1,
                     (meta.currency || 'GBP').slice(0, 3), totalMinor, itemCount, JSON.stringify(items),
                     email, emailHash,
-                    new Date(c.firstAt), new Date(c.lastAt),
-                    c.lastUrl, c.lastReferrer,
-                    c.utmSource, c.utmMedium, c.utmCampaign,
-                    meta.countryCode || c.countryCode,
+                    firstAt, lastAt,
+                    c.lastUrl, c.lastReferrer, c.firstUrl,
+                    c.utmSource, c.utmMedium, c.utmCampaign, meta.countryCode || c.countryCode,
+                    c.regionCode, meta.city || null, c.ip, c.ipHash,
+                    c.userAgent, c.browser, deviceType,
+                    Number(c.pageViews || 0) || null, dwellSeconds,
+                    c.custFirstName || null, c.custLastName || null, c.custPhone || null,
                 ],
             );
             opened += 1;
@@ -347,4 +415,18 @@ export class AbandonedCartService {
             return `${currency} ${major.toFixed(2)}`;
         }
     }
+}
+
+/**
+ * Tiny UA classifier — mobile / tablet / bot / desktop. Same
+ * heuristics the visitor_event scanner uses so the two tables
+ * agree on device buckets.
+ */
+function classifyDevice(ua: string | null | undefined): string | null {
+    const s = String(ua || '').toLowerCase();
+    if (!s) return null;
+    if (/bot|crawl|spider|slurp|scanner/.test(s)) return 'bot';
+    if (/ipad|tablet|kindle|playbook/.test(s)) return 'tablet';
+    if (/mobile|iphone|android(?!.*tablet)|windows phone/.test(s)) return 'mobile';
+    return 'desktop';
 }

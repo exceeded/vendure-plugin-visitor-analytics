@@ -122,6 +122,75 @@ export class AbandonedCart {
     @Column({ type: 'varchar', length: 16, nullable: true })
     countryCode!: string | null;
 
+    // ── Extended visitor context (v0.9) ─────────────────────────────
+    // The block below is a session snapshot captured by the scanner
+    // from the latest `visitor_event` row for the same session. Every
+    // field is nullable because the tracking JS may not have set it,
+    // or the session may pre-date the visitor-analytics install.
+
+    /** ISO-3166-2 sub-division (state / region) as reported by the
+     *  edge (Cloudflare / origin geo). GB regions surface as e.g. `SCT`. */
+    @Column({ type: 'varchar', length: 16, nullable: true })
+    regionCode!: string | null;
+
+    @Column({ type: 'varchar', length: 100, nullable: true })
+    city!: string | null;
+
+    /** Raw IPv4 / IPv6 seen on the latest event. May be null when the
+     *  install runs with `hashAuditIps` — hashed value goes in
+     *  `ipHash` instead. */
+    @Column({ type: 'varchar', length: 45, nullable: true })
+    ip!: string | null;
+
+    /** Salted SHA-256 of the IP. Same salt as `visitor_event.ipHash`. */
+    @Column({ type: 'varchar', length: 64, nullable: true })
+    ipHash!: string | null;
+
+    @Column({ type: 'varchar', length: 1000, nullable: true })
+    userAgent!: string | null;
+
+    /** Coarse browser family (Chrome / Safari / Firefox / Edge / Opera /
+     *  Samsung / other). Filled by the same lightweight UA parser
+     *  visitor_event uses. */
+    @Column({ type: 'varchar', length: 64, nullable: true })
+    browser!: string | null;
+
+    /** desktop / mobile / tablet / bot. Derived from the user agent
+     *  at snapshot time so admin filters don't have to parse UAs. */
+    @Column({ type: 'varchar', length: 16, nullable: true })
+    deviceType!: string | null;
+
+    /** First URL seen in the session — i.e. the landing page.
+     *  Distinct from `lastKnownUrl` which is the most recent. */
+    @Column({ type: 'varchar', length: 2048, nullable: true })
+    landingUrl!: string | null;
+
+    /** Total distinct `pageview` events in the session that produced
+     *  this cart. Cheap facet for "high-intent" (5+ pages) vs
+     *  "quick-bounce" (1-2) filters in the admin UI. */
+    @Column({ type: 'int', nullable: true })
+    pageViews!: number | null;
+
+    /** lastSnapshotAt − firstSnapshotAt, in seconds. Cheap to filter
+     *  on for "long-considered" carts vs quick bounces. Denormalised
+     *  so admin queries don't have to compute it repeatedly. */
+    @Column({ type: 'int', nullable: true })
+    dwellSeconds!: number | null;
+
+    // ── Customer identity snapshot ──────────────────────────────────
+    // These live on the Customer entity too, but a snapshot here means
+    // the record still reads correctly if the customer is later renamed
+    // or their contact details change.
+
+    @Column({ type: 'varchar', length: 100, nullable: true })
+    firstName!: string | null;
+
+    @Column({ type: 'varchar', length: 100, nullable: true })
+    lastName!: string | null;
+
+    @Column({ type: 'varchar', length: 32, nullable: true })
+    phone!: string | null;
+
     /** True once we've fired the Slack / email notification for this
      *  abandonment. Prevents duplicate notifications when the scanner
      *  re-runs. */
