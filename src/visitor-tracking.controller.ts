@@ -63,6 +63,44 @@ function clampInt(raw: any, fallback: number, min: number, max: number): number 
     return Math.max(min, Math.min(max, n));
 }
 
+/**
+ * Parse a `?channelId=` query param.
+ *
+ * Returns:
+ *   - `null` when omitted / empty / `0` / `all` → do NOT filter by channel
+ *     (aggregate across every channel)
+ *   - a positive integer otherwise → filter to that channel
+ *
+ * Anything unparseable falls back to `null` so a bad param never
+ * silently narrows the result set to channel 1.
+ */
+function parseChannelId(raw: any): number | null {
+    const s = String(raw ?? '').trim().toLowerCase();
+    if (!s || s === '0' || s === 'all') return null;
+    const n = parseInt(s, 10);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return n;
+}
+
+/**
+ * Build a `WHERE`/`AND` fragment + params array for the channel
+ * filter. Returns `{ sql: '', params: [] }` when `channelId` is
+ * null, so callers can always append `${w.sql}` and spread
+ * `w.params` unconditionally.
+ *
+ * Usage:
+ *   const w = channelWhere(channelId, 've');
+ *   const rows = await conn.query(
+ *     `SELECT ... FROM visitor_event ve
+ *      WHERE createdAt >= ? ${w.sql}`,
+ *     [cutoff, ...w.params]);
+ */
+function channelWhere(channelId: number | null, alias?: string): { sql: string; params: any[] } {
+    if (channelId == null) return { sql: '', params: [] };
+    const col = alias ? `${alias}.channelId` : 'channelId';
+    return { sql: `AND ${col} = ?`, params: [channelId] };
+}
+
 import { getRealIp, getResolvedCountry, getResolvedRegion } from './proxy-headers';
 function realIp(req: Request): string | null { return getRealIp(req); }
 
@@ -231,6 +269,8 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
     async summary(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
         if (!requireAdmin(ctx, res)) return;
         const days = Math.min(Math.max(parseInt(String((req.query as any).days || '30'), 10) || 30, 1), 365);
+        const channelId = parseChannelId((req.query as any).channelId);
+        const w = channelWhere(channelId);
         const rows = await this.connection.rawConnection.query(
             `SELECT DATE(createdAt) AS day,
                     COUNT(DISTINCT visitorId) AS visitors,
@@ -238,10 +278,10 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                     COUNT(*) AS events,
                     SUM(type='pageview') AS pageviews
              FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
+             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
              GROUP BY DATE(createdAt)
              ORDER BY day`,
-            [days],
+            [days, ...w.params],
         );
         const [{ totalVisitors, totalSessions, totalPageviews, avgTimeMs }] = await this.connection.rawConnection.query(
             `SELECT COUNT(DISTINCT visitorId) AS totalVisitors,
@@ -249,11 +289,11 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                     SUM(type='pageview')      AS totalPageviews,
                     AVG(CASE WHEN type='unload' AND timeOnPageMs > 0 THEN timeOnPageMs END) AS avgTimeMs
              FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)`,
-            [days],
+             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}`,
+            [days, ...w.params],
         );
         return res.json({
-            days,
+            days, channelId,
             totals: {
                 visitors: Number(totalVisitors) || 0,
                 sessions: Number(totalSessions) || 0,
@@ -279,6 +319,8 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const days = clampInt((req.query as any).days, 30, 1, 365);
         const take = clampInt((req.query as any).take, 25, 1, 500);
         const skip = clampInt((req.query as any).skip, 0, 0, 1_000_000);
+        const channelId = parseChannelId((req.query as any).channelId);
+        const w = channelWhere(channelId);
 
         const rows = await this.connection.rawConnection.query(
             `SELECT source, medium, COALESCE(MAX(campaign), '') AS campaign,
@@ -294,8 +336,8 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                         MAX(CASE WHEN url LIKE '/products/%' AND type='pageview' THEN 1 ELSE 0 END) AS reached_product,
                         MAX(CASE WHEN (url LIKE '%/checkout%' OR url LIKE '%cart%') AND type='pageview' THEN 1 ELSE 0 END) AS reached_checkout
                  FROM visitor_event
-                 WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
-                 GROUP BY visitorId, sessionId,
+                 WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                   GROUP BY visitorId, sessionId,
                           COALESCE(utmSource, referrerDomain, '(direct)'),
                           COALESCE(utmMedium, IF(referrerDomain IS NOT NULL, 'referral', 'none')),
                           utmCampaign
@@ -303,7 +345,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
              GROUP BY source, medium
              ORDER BY visitors DESC
              LIMIT ? OFFSET ?`,
-            [days, take, skip],
+            [days, take, skip, ...w.params],
         );
         const [{ total }] = await this.connection.rawConnection.query(
             `SELECT COUNT(*) AS total FROM (
@@ -311,9 +353,9 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                     COALESCE(utmSource, referrerDomain, '(direct)') AS source,
                     COALESCE(utmMedium, IF(referrerDomain IS NOT NULL, 'referral', 'none')) AS medium
                 FROM visitor_event
-                WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
-             ) sources`,
-            [days],
+                WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                   ) sources`,
+            [days, ...w.params],
         );
         return res.json({
             sources: rows.map((r: any) => ({
@@ -336,6 +378,8 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const days = clampInt((req.query as any).days, 30, 1, 365);
         const take = clampInt((req.query as any).take, 25, 1, 500);
         const skip = clampInt((req.query as any).skip, 0, 0, 1_000_000);
+        const channelId = parseChannelId((req.query as any).channelId);
+        const w = channelWhere(channelId);
         const rows = await this.connection.rawConnection.query(
             `SELECT url,
                     MAX(title)               AS title,
@@ -343,18 +387,18 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                     COUNT(DISTINCT visitorId) AS uniqueVisitors,
                     AVG(NULLIF(timeOnPageMs, 0)) AS avgTimeMs
              FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
-               AND type IN ('pageview', 'unload')
+             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                   AND type IN ('pageview', 'unload')
              GROUP BY url
              ORDER BY views DESC
              LIMIT ? OFFSET ?`,
-            [days, take, skip],
+            [days, take, skip, ...w.params],
         );
         const [{ total }] = await this.connection.rawConnection.query(
             `SELECT COUNT(DISTINCT url) AS total FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
-               AND type IN ('pageview', 'unload')`,
-            [days],
+             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                   AND type IN ('pageview', 'unload')`,
+            [days, ...w.params],
         );
         return res.json({
             pages: rows.map((r: any) => ({
@@ -372,6 +416,8 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
     async funnel(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
         if (!requireAdmin(ctx, res)) return;
         const days = Math.min(Math.max(parseInt(String((req.query as any).days || '30'), 10) || 30, 1), 365);
+        const channelId = parseChannelId((req.query as any).channelId);
+        const w = channelWhere(channelId);
         const stages = [
             { key: 'visited',    label: 'Any page',          where: `1=1` },
             { key: 'viewed',     label: 'Viewed a product',  where: `url LIKE '/products/%'` },
@@ -382,9 +428,9 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         for (const s of stages) {
             const [{ n }] = await this.connection.rawConnection.query(
                 `SELECT COUNT(DISTINCT visitorId) AS n FROM visitor_event
-                 WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
+                 WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
                    AND type='pageview' AND (${s.where})`,
-                [days],
+                [days, ...w.params],
             );
             result.push({ key: s.key, label: s.label, visitors: Number(n) || 0 });
         }
@@ -399,6 +445,8 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const days = clampInt((req.query as any).days, 30, 1, 365);
         const take = clampInt((req.query as any).take, 25, 1, 500);
         const skip = clampInt((req.query as any).skip, 0, 0, 1_000_000);
+        const channelId = parseChannelId((req.query as any).channelId);
+        const w = channelWhere(channelId);
         const rows = await this.connection.rawConnection.query(
             `SELECT url,
                     MAX(title) AS title,
@@ -407,23 +455,24 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                  SELECT sessionId, url, title, createdAt,
                         ROW_NUMBER() OVER (PARTITION BY sessionId ORDER BY createdAt DESC) AS rn
                  FROM visitor_event
-                 WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
+                 WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
                    AND type='pageview'
              ) last_pages
              WHERE rn = 1
              GROUP BY url
              ORDER BY exits DESC
              LIMIT ? OFFSET ?`,
-            [days, take, skip],
+            [days, take, skip, ...w.params],
         );
         const [{ total }] = await this.connection.rawConnection.query(
             `SELECT COUNT(DISTINCT url) AS total FROM (
                 SELECT sessionId, url,
                        ROW_NUMBER() OVER (PARTITION BY sessionId ORDER BY createdAt DESC) AS rn
                 FROM visitor_event
-                WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) AND type='pageview'
+                WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                   AND type='pageview'
              ) lp WHERE rn = 1`,
-            [days],
+            [days, ...w.params],
         );
         return res.json({
             exitPages: rows.map((r: any) => ({
@@ -442,24 +491,26 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const days = clampInt((req.query as any).days, 30, 1, 365);
         const take = clampInt((req.query as any).take, 25, 1, 500);
         const skip = clampInt((req.query as any).skip, 0, 0, 1_000_000);
+        const channelId = parseChannelId((req.query as any).channelId);
+        const w = channelWhere(channelId);
         const rows = await this.connection.rawConnection.query(
             `SELECT type,
                     COUNT(*) AS count,
                     COUNT(DISTINCT visitorId) AS uniqueVisitors,
                     COUNT(DISTINCT sessionId) AS sessions
              FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
-               AND type NOT IN ('pageview', 'unload')
+             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                   AND type NOT IN ('pageview', 'unload')
              GROUP BY type
              ORDER BY count DESC
              LIMIT ? OFFSET ?`,
-            [days, take, skip],
+            [days, take, skip, ...w.params],
         );
         const [{ total }] = await this.connection.rawConnection.query(
             `SELECT COUNT(DISTINCT type) AS total FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
-               AND type NOT IN ('pageview', 'unload')`,
-            [days],
+             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                   AND type NOT IN ('pageview', 'unload')`,
+            [days, ...w.params],
         );
         return res.json({
             events: rows.map((r: any) => ({
@@ -481,9 +532,36 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
      * Each event payload:
      *   data: { ts, activeCount, recent: [{ visitorId, url, country, secondsAgo }] }
      */
+    /**
+     * List channels the current admin can see, for the Visitor Journey
+     * channel picker. Cheap read — one row per channel with just the
+     * id + code + token. Reflects the union of channels visible under
+     * `Permission.ReadChannel`.
+     *
+     * Kept in this plugin (rather than requiring the admin UI to talk
+     * to the Vendure /admin-api directly) so a stripped-down install
+     * still gets the picker working with zero extra wiring.
+     */
+    @Get('visitors/channels')
+    async channelList(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        const rows = await this.connection.rawConnection.query(
+            `SELECT id, code, token FROM channel ORDER BY id ASC LIMIT 200`,
+        );
+        return res.json({
+            channels: rows.map((r: any) => ({
+                id: Number(r.id),
+                code: String(r.code),
+                token: String(r.token),
+            })),
+        });
+    }
+
     @Get('visitors/live')
     async live(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
         if (!requireAdmin(ctx, res)) return;
+        const channelId = parseChannelId((req.query as any).channelId);
+        const w = channelWhere(channelId);
         if (!isLicensed(VisitorAnalyticsPlugin.getLicenceStatus())) {
             return res.status(402).json(premiumFeatureError('vendure-plugin-visitor-analytics'));
         }
@@ -502,7 +580,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                             MAX(country) AS country,
                             TIMESTAMPDIFF(SECOND, MAX(createdAt), NOW()) AS secondsAgo
                      FROM visitor_event
-                     WHERE createdAt >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+                     WHERE createdAt >= DATE_SUB(NOW(), INTERVAL 5 MINUTE) ${w.sql}
                        AND type = 'pageview'
                      GROUP BY visitorId
                      ORDER BY MAX(createdAt) DESC
@@ -552,6 +630,8 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const days = clampInt((req.query as any).days, 7, 1, 365);
         const take = clampInt((req.query as any).take, 25, 1, 500);
         const skip = clampInt((req.query as any).skip, 0, 0, 1_000_000);
+        const channelId = parseChannelId((req.query as any).channelId);
+        const w = channelWhere(channelId);
         const rows = await this.connection.rawConnection.query(
             `SELECT visitorId,
                     MAX(customerId)            AS customerId,
@@ -565,16 +645,17 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                     MAX(os)                    AS os,
                     MAX(device)                AS device
              FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
-             GROUP BY visitorId
+             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                   GROUP BY visitorId
              ORDER BY MAX(createdAt) DESC
              LIMIT ? OFFSET ?`,
-            [days, take, skip],
+            [days, take, skip, ...w.params],
         );
         const [{ total }] = await this.connection.rawConnection.query(
             `SELECT COUNT(DISTINCT visitorId) AS total
-             FROM visitor_event WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)`,
-            [days],
+             FROM visitor_event WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                   `,
+            [days, ...w.params],
         );
         return res.json({
             visitors: rows.map((r: any) => ({
@@ -855,16 +936,18 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
             return res.status(402).json(premiumFeatureError('vendure-plugin-visitor-analytics'));
         }
         const days = Math.min(Math.max(parseInt(String((req.query as any).days || '7'), 10) || 7, 1), 90);
+        const channelId = parseChannelId((req.query as any).channelId);
+        const w = channelWhere(channelId);
         const rows = await this.connection.rawConnection.query(
             `SELECT createdAt, visitorId, sessionId, customerId, channelId,
                     type, url, title, referrerDomain,
                     country, region, city, browser, os, device,
                     isBot, goalId, utmSource, utmMedium, utmCampaign
              FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
-             ORDER BY createdAt DESC
+             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                   ORDER BY createdAt DESC
              LIMIT 200000`,
-            [days],
+            [days, ...w.params],
         );
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="visitors-${new Date().toISOString().slice(0, 10)}.csv"`);

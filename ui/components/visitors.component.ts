@@ -60,6 +60,17 @@ interface VisitorProfile {
                     <p class="hulo-hero-sub">Live visitor count plus the funnel from landing → product → cart → checkout → order. Change the date range on the right.</p>
                 </div>
                 <div class="hulo-hero-actions">
+                    <!-- Channel picker. Empty value = All channels
+                         (aggregate). Sits before the date range so the
+                         narrower filter comes first, matching Vendure
+                         convention on other admin filters. -->
+                    <select class="hulo-hero-select"
+                            [ngModel]="channelId ?? ''"
+                            (ngModelChange)="setChannel($event)"
+                            aria-label="Channel">
+                        <option [ngValue]="''">All channels</option>
+                        <option *ngFor="let c of channels" [ngValue]="c.id">{{ c.code }}</option>
+                    </select>
                     <span class="range">
                         <button class="btn btn-sm btn-link" *ngFor="let d of [7, 30, 90, 365]"
                             (click)="setDays(d)" [class.active]="days === d">{{ d }}d</button>
@@ -496,6 +507,16 @@ interface VisitorProfile {
             :host button, :host .btn { min-height: 40px; }
             :host vdr-action-bar { flex-wrap: wrap; gap: 6px; }
             :host vdr-action-bar button { min-height: 40px; padding: 6px 12px; }
+            /* Channel picker inside the HULO hero — dark chrome so it
+               sits on the navy gradient without clashing. */
+            .hulo-hero-select {
+                background: rgba(255,255,255,0.08); color: #fff;
+                border: 1px solid rgba(255,255,255,0.15); border-radius: 6px;
+                padding: 6px 10px; font-size: 13px; min-height: 34px; max-width: 200px;
+            }
+            .hulo-hero-select option { background: #0f172a; color: #fff; }
+            .hulo-hero-select:focus { outline: none; border-color: #f59e0b;
+                box-shadow: 0 0 0 3px rgba(245,158,11,0.25); }
             .range { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 8px 0; }
             .range .btn { min-height: 40px; min-width: 48px; padding: 6px 12px; font-size: 13px; }
             .summary-row { gap: 8px; }
@@ -637,6 +658,12 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     loading = false;
     days = 30;
 
+    /** Channel filter — null = All channels (aggregate). Populated by
+     *  `loadChannels()` on init. Every API call carries `channelId`
+     *  when set. */
+    channelId: number | null = null;
+    channels: Array<{ id: number; code: string }> = [];
+
     summary = { visitors: 0, sessions: 0, pageviews: 0, avgTimeMs: 0 };
     funnel: FunnelStage[] = [];
 
@@ -681,6 +708,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     ) {}
 
     ngOnInit() {
+        this.loadChannels();
         this.loadAll();
         this.connectLive();
         this.loadStatus();
@@ -717,7 +745,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     private connectLive(): void {
         if (typeof EventSource === 'undefined') return;
         try {
-            this.liveSource = new EventSource('/ees/visitors/live', { withCredentials: true } as any);
+            this.liveSource = new EventSource('/ees/visitors/live' + (this.channelId != null ? `?channelId=${this.channelId}` : ''), { withCredentials: true } as any);
         } catch {
             return;
         }
@@ -756,11 +784,42 @@ export class VisitorsComponent implements OnInit, OnDestroy {
         this.loadAll();
     }
 
+    /** Called when the operator picks a channel from the hero
+     *  picker. `null` / empty string = All channels. Reloads every
+     *  panel + rewires the SSE stream so the live-now count is
+     *  channel-scoped too. */
+    setChannel(id: number | '' | null) {
+        this.channelId = (id === '' || id == null) ? null : Number(id);
+        this.topSkip = 0; this.exitSkip = 0; this.recentSkip = 0;
+        this.disconnectLive();
+        this.connectLive();
+        this.loadAll();
+    }
+
+    /** Build the shared `?days=&channelId=` fragment. Omits
+     *  channelId when null so aggregated queries stay short. */
+    private q(): string {
+        return `days=${this.days}` +
+            (this.channelId != null ? `&channelId=${this.channelId}` : '');
+    }
+
+    /** Fetch the list of channels the current admin can see, once
+     *  at init. Cheap read (one row per channel). */
+    private loadChannels(): void {
+        this.http.get<any>('/ees/visitors/channels').subscribe({
+            next: (r) => {
+                this.channels = Array.isArray(r?.channels) ? r.channels : [];
+                this.cdr.markForCheck();
+            },
+            error: () => { /* leave as empty — picker still shows All */ },
+        });
+    }
+
     loadAll() {
         this.loading = true;
         Promise.all([
-            this.http.get<any>(`/ees/visitors/summary?days=${this.days}`).toPromise(),
-            this.http.get<any>(`/ees/visitors/funnel?days=${this.days}`).toPromise(),
+            this.http.get<any>(`/ees/visitors/summary?${this.q()}`).toPromise(),
+            this.http.get<any>(`/ees/visitors/funnel?${this.q()}`).toPromise(),
             this.fetchTop(),
             this.fetchExit(),
             this.fetchRecent(),
@@ -776,7 +835,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     }
 
     fetchTop(): Promise<void> {
-        return this.http.get<any>(`/ees/visitors/top-pages?days=${this.days}&take=${this.topTake}&skip=${this.topSkip}`).toPromise()
+        return this.http.get<any>(`/ees/visitors/top-pages?${this.q()}&take=${this.topTake}&skip=${this.topSkip}`).toPromise()
             .then((res: any) => {
                 this.topPages = res?.pages || [];
                 this.topTotal = res?.total || 0;
@@ -787,7 +846,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     topNext() { this.topSkip += this.topTake; this.fetchTop(); }
 
     fetchExit(): Promise<void> {
-        return this.http.get<any>(`/ees/visitors/exit-pages?days=${this.days}&take=${this.exitTake}&skip=${this.exitSkip}`).toPromise()
+        return this.http.get<any>(`/ees/visitors/exit-pages?${this.q()}&take=${this.exitTake}&skip=${this.exitSkip}`).toPromise()
             .then((res: any) => {
                 this.exitPages = res?.exitPages || [];
                 this.exitTotal = res?.total || 0;
@@ -798,7 +857,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     exitNext() { this.exitSkip += this.exitTake; this.fetchExit(); }
 
     fetchRecent(): Promise<void> {
-        return this.http.get<any>(`/ees/visitors/recent?days=${this.days}&take=${this.recentTake}&skip=${this.recentSkip}`).toPromise()
+        return this.http.get<any>(`/ees/visitors/recent?${this.q()}&take=${this.recentTake}&skip=${this.recentSkip}`).toPromise()
             .then((res: any) => {
                 this.recent = res?.visitors || [];
                 this.recentTotal = res?.total || 0;
