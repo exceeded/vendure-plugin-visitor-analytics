@@ -38,7 +38,7 @@
   },
   "devDependencies": {
     "@huloglobal/vendure-licence-sdk": "^0.4.0",
-    "@nestjs/common": "^10.0.0",
+    "@nestjs/common": "^11.1.28",
     "@vendure/core": "^3.7.1",
     "typeorm": "^0.3.0",
     "typescript": "^5.4.0"
