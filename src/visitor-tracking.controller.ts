@@ -360,7 +360,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
              GROUP BY source, medium
              ORDER BY visitors DESC
              LIMIT ? OFFSET ?`,
-            [days, take, skip, ...w.params],
+            [days, ...w.params, take, skip],
         );
         const [{ total }] = await this.connection.rawConnection.query(
             `SELECT COUNT(*) AS total FROM (
@@ -407,7 +407,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
              GROUP BY url
              ORDER BY views DESC
              LIMIT ? OFFSET ?`,
-            [days, take, skip, ...w.params],
+            [days, ...w.params, take, skip],
         );
         const [{ total }] = await this.connection.rawConnection.query(
             `SELECT COUNT(DISTINCT url) AS total FROM visitor_event
@@ -477,7 +477,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
              GROUP BY url
              ORDER BY exits DESC
              LIMIT ? OFFSET ?`,
-            [days, take, skip, ...w.params],
+            [days, ...w.params, take, skip],
         );
         const [{ total }] = await this.connection.rawConnection.query(
             `SELECT COUNT(DISTINCT url) AS total FROM (
@@ -519,7 +519,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
              GROUP BY type
              ORDER BY count DESC
              LIMIT ? OFFSET ?`,
-            [days, take, skip, ...w.params],
+            [days, ...w.params, take, skip],
         );
         const [{ total }] = await this.connection.rawConnection.query(
             `SELECT COUNT(DISTINCT type) AS total FROM visitor_event
@@ -600,6 +600,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                      GROUP BY visitorId
                      ORDER BY MAX(createdAt) DESC
                      LIMIT 20`,
+                    [...w.params],
                 );
                 const payload = {
                     ts: new Date().toISOString(),
@@ -664,7 +665,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                    GROUP BY visitorId
              ORDER BY MAX(createdAt) DESC
              LIMIT ? OFFSET ?`,
-            [days, take, skip, ...w.params],
+            [days, ...w.params, take, skip],
         );
         const [{ total }] = await this.connection.rawConnection.query(
             `SELECT COUNT(DISTINCT visitorId) AS total
