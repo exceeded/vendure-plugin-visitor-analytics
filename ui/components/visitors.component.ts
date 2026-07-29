@@ -179,10 +179,75 @@ interface VisitorProfile {
             </div>
         </vdr-page-block>
 
+        <!-- ── Daily activity chart — line chart over the summary's daily
+             series. Series toggles are multi-select (identity colors are
+             fixed per series and never repaint on toggle); state persists
+             in localStorage alongside the section collapse prefs. -->
         <vdr-page-block>
             <div class="card">
                 <div class="card-block">
-                    <h3 class="card-title">Funnel <span class="muted">(last {{ days }} days)</span></h3>
+                    <button type="button" class="collapse-head" (click)="toggleSection('chart')" [attr.aria-expanded]="sectionOpen['chart']">
+                        <h3 class="card-title">Daily activity <span class="muted">(last {{ days }} days)</span></h3>
+                        <clr-icon shape="angle" [attr.dir]="sectionOpen['chart'] ? 'down' : 'right'"></clr-icon>
+                    </button>
+                    <ng-container *ngIf="sectionOpen['chart']">
+                        <div class="series-toggles" role="group" aria-label="Chart series">
+                            <button *ngFor="let sd of seriesDefs" type="button"
+                                class="series-pill" [class.on]="seriesOn[sd.key]"
+                                [attr.aria-pressed]="seriesOn[sd.key]"
+                                (click)="toggleSeries(sd.key)">
+                                <span class="series-chip" [style.background]="seriesOn[sd.key] ? sd.color : 'transparent'" [style.borderColor]="sd.color"></span>
+                                {{ sd.label }}
+                            </button>
+                        </div>
+                        <div *ngIf="!chart" class="muted pad">No data in this range.</div>
+                        <div class="chart-wrap" *ngIf="chart">
+                            <svg #dailySvg class="daily-chart" viewBox="0 0 800 240" preserveAspectRatio="none" role="img"
+                                [attr.aria-label]="'Daily activity chart, ' + days + ' days'"
+                                (mousemove)="onChartMove($event, dailySvg)" (mouseleave)="onChartLeave()">
+                                <!-- recessive gridlines + y labels -->
+                                <g *ngFor="let t of chart.ticks">
+                                    <line [attr.x1]="chart.L" [attr.x2]="chart.R" [attr.y1]="t.y" [attr.y2]="t.y" class="gridline"/>
+                                    <text [attr.x]="chart.L - 6" [attr.y]="t.y + 3" class="axis-label" text-anchor="end">{{ t.label }}</text>
+                                </g>
+                                <!-- x labels -->
+                                <text *ngFor="let xl of chart.xlabels" [attr.x]="xl.x" y="236" class="axis-label" text-anchor="middle">{{ xl.label }}</text>
+                                <!-- series lines: 2px, color fixed per series -->
+                                <polyline *ngFor="let ln of chart.lines" [attr.points]="ln.points"
+                                    fill="none" [attr.stroke]="ln.color" stroke-width="2"
+                                    stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+                                <!-- hover crosshair + markers -->
+                                <g *ngIf="hoverIdx !== null && chart.xs[hoverIdx] !== undefined">
+                                    <line [attr.x1]="chart.xs[hoverIdx]" [attr.x2]="chart.xs[hoverIdx]" y1="10" y2="216" class="crosshair"/>
+                                    <circle *ngFor="let ln of chart.lines" [attr.cx]="chart.xs[hoverIdx]" [attr.cy]="ln.ys[hoverIdx]"
+                                        r="4" [attr.fill]="ln.color" class="hover-dot"/>
+                                </g>
+                            </svg>
+                            <!-- tooltip: text tokens carry the values; colored chips carry identity -->
+                            <div class="chart-tip" *ngIf="hoverIdx !== null && chart.days[hoverIdx]"
+                                [style.left.%]="(chart.xs[hoverIdx] / 800) * 100"
+                                [class.flip]="chart.xs[hoverIdx] > 560">
+                                <div class="tip-date">{{ chart.days[hoverIdx].label }}</div>
+                                <div class="tip-row" *ngFor="let ln of chart.lines">
+                                    <span class="series-chip" [style.background]="ln.color"></span>
+                                    <span class="tip-name">{{ ln.label }}</span>
+                                    <span class="tip-val">{{ chart.days[hoverIdx].values[ln.key] | number }}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </ng-container>
+                </div>
+            </div>
+        </vdr-page-block>
+
+        <vdr-page-block>
+            <div class="card">
+                <div class="card-block">
+                    <button type="button" class="collapse-head" (click)="toggleSection('funnel')" [attr.aria-expanded]="sectionOpen['funnel']">
+                        <h3 class="card-title">Funnel <span class="muted">(last {{ days }} days)</span></h3>
+                        <clr-icon shape="angle" [attr.dir]="sectionOpen['funnel'] ? 'down' : 'right'"></clr-icon>
+                    </button>
+                    <ng-container *ngIf="sectionOpen['funnel']">
                     <div *ngIf="funnel.length === 0" class="muted pad">No data yet.</div>
                     <div class="funnel" *ngIf="funnel.length > 0">
                         <div class="funnel-row" *ngFor="let s of funnel">
@@ -196,6 +261,7 @@ interface VisitorProfile {
                             </div>
                         </div>
                     </div>
+                    </ng-container>
                 </div>
             </div>
         </vdr-page-block>
@@ -204,10 +270,14 @@ interface VisitorProfile {
             <div class="two-col">
                 <div class="card">
                     <div class="card-block">
-                        <h3 class="card-title">
-                            Top pages
-                            <span class="muted">{{ topTotal | number }} total</span>
-                        </h3>
+                        <button type="button" class="collapse-head" (click)="toggleSection('top')" [attr.aria-expanded]="sectionOpen['top']">
+                            <h3 class="card-title">
+                                Top pages
+                                <span class="muted">{{ topTotal | number }} total</span>
+                            </h3>
+                            <clr-icon shape="angle" [attr.dir]="sectionOpen['top'] ? 'down' : 'right'"></clr-icon>
+                        </button>
+                        <ng-container *ngIf="sectionOpen['top']">
                         <div *ngIf="topPages.length === 0" class="muted pad">No data.</div>
                         <table class="table table-compact" *ngIf="topPages.length > 0">
                             <thead>
@@ -230,15 +300,20 @@ interface VisitorProfile {
                             <span class="muted">{{ topSkip + 1 }}–{{ topSkip + topPages.length }} of {{ topTotal }}</span>
                             <button class="btn btn-sm" (click)="topNext()" [disabled]="topSkip + topTake >= topTotal">Next ›</button>
                         </div>
+                        </ng-container>
                     </div>
                 </div>
 
                 <div class="card">
                     <div class="card-block">
-                        <h3 class="card-title">
-                            Exit pages
-                            <span class="muted">{{ exitTotal | number }} total</span>
-                        </h3>
+                        <button type="button" class="collapse-head" (click)="toggleSection('exit')" [attr.aria-expanded]="sectionOpen['exit']">
+                            <h3 class="card-title">
+                                Exit pages
+                                <span class="muted">{{ exitTotal | number }} total</span>
+                            </h3>
+                            <clr-icon shape="angle" [attr.dir]="sectionOpen['exit'] ? 'down' : 'right'"></clr-icon>
+                        </button>
+                        <ng-container *ngIf="sectionOpen['exit']">
                         <div *ngIf="exitPages.length === 0" class="muted pad">No data.</div>
                         <table class="table table-compact" *ngIf="exitPages.length > 0">
                             <thead>
@@ -259,6 +334,7 @@ interface VisitorProfile {
                             <span class="muted">{{ exitSkip + 1 }}–{{ exitSkip + exitPages.length }} of {{ exitTotal }}</span>
                             <button class="btn btn-sm" (click)="exitNext()" [disabled]="exitSkip + exitTake >= exitTotal">Next ›</button>
                         </div>
+                        </ng-container>
                     </div>
                 </div>
             </div>
@@ -267,10 +343,14 @@ interface VisitorProfile {
         <vdr-page-block>
             <div class="card">
                 <div class="card-block">
-                    <h3 class="card-title">
-                        Visitors
-                        <span class="muted">{{ recentTotal | number }} total · click a row for the full profile</span>
-                    </h3>
+                    <button type="button" class="collapse-head" (click)="toggleSection('visitors')" [attr.aria-expanded]="sectionOpen['visitors']">
+                        <h3 class="card-title">
+                            Visitors
+                            <span class="muted">{{ recentTotal | number }} total · click a row for the full profile</span>
+                        </h3>
+                        <clr-icon shape="angle" [attr.dir]="sectionOpen['visitors'] ? 'down' : 'right'"></clr-icon>
+                    </button>
+                    <ng-container *ngIf="sectionOpen['visitors']">
                     <div *ngIf="recent.length === 0" class="muted pad">No visitors in this range.</div>
                     <table class="table table-compact" *ngIf="recent.length > 0">
                         <thead>
@@ -319,6 +399,7 @@ interface VisitorProfile {
                         <span class="muted">{{ recentSkip + 1 }}–{{ recentSkip + recent.length }} of {{ recentTotal }}</span>
                         <button class="btn btn-sm" (click)="recentNext()" [disabled]="recentSkip + recentTake >= recentTotal">Next ›</button>
                     </div>
+                    </ng-container>
                 </div>
             </div>
         </vdr-page-block>
@@ -452,6 +533,72 @@ interface VisitorProfile {
     `,
     styles: [`
         :host { color: var(--color-text-100, inherit); display: block; }
+
+        /* ── Chart series colors — categorical identity, fixed order.
+           Validated (scripts/validate_palette.js): light set passes all
+           six checks on the light admin surface; dark steps pass on
+           #1f2937. Colors follow the SERIES, never its toggle rank. */
+        :host {
+            --hulo-s1: #2a78d6; /* unique visitors — blue */
+            --hulo-s2: #eb6834; /* sessions — orange */
+            --hulo-s3: #1baf7a; /* page views — aqua */
+            --hulo-s4: #eda100; /* events — yellow */
+        }
+        :host-context([data-theme='dark']),
+        :host-context(.theme-dark) {
+            --hulo-s1: #3987e5;
+            --hulo-s2: #d95926;
+            --hulo-s3: #199e70;
+            --hulo-s4: #c98500;
+        }
+
+        /* ── Collapsible section headers ─────────────────────────── */
+        .collapse-head {
+            display: flex; align-items: center; justify-content: space-between;
+            width: 100%; background: none; border: 0; padding: 0; cursor: pointer;
+            text-align: left; color: inherit;
+        }
+        .collapse-head .card-title { margin-bottom: 0; }
+        .collapse-head clr-icon { color: var(--color-component-color-300, #64748b); }
+        .collapse-head:hover clr-icon { color: var(--color-primary-500, #f59e0b); }
+        .collapse-head[aria-expanded='true'] .card-title { margin-bottom: 12px; }
+
+        /* ── Daily activity chart ────────────────────────────────── */
+        .series-toggles { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+        .series-pill {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 5px 12px; min-height: 30px; border-radius: 999px;
+            border: 1px solid var(--color-component-border-200, #d1d5db);
+            background: var(--color-component-bg-100, #fff);
+            color: var(--color-component-color-200, #475569);
+            font-size: 12px; font-weight: 600; cursor: pointer;
+            transition: border-color 0.15s ease, color 0.15s ease;
+        }
+        .series-pill.on { color: var(--color-text-100, #0f172a); border-color: var(--color-component-border-300, #94a3b8); }
+        .series-pill:hover { border-color: var(--color-primary-500, #f59e0b); }
+        .series-chip {
+            width: 10px; height: 10px; border-radius: 3px; display: inline-block;
+            border: 1.5px solid transparent; flex: 0 0 auto;
+        }
+        .chart-wrap { position: relative; }
+        .daily-chart { width: 100%; height: 240px; display: block; }
+        .gridline { stroke: var(--color-component-border-100, #e2e8f0); stroke-width: 1; }
+        .axis-label { fill: var(--color-component-color-300, #64748b); font-size: 10px; }
+        .crosshair { stroke: var(--color-component-color-300, #94a3b8); stroke-width: 1; stroke-dasharray: 3 3; }
+        .hover-dot { stroke: var(--color-component-bg-100, #fff); stroke-width: 2; }
+        .chart-tip {
+            position: absolute; top: 8px; transform: translateX(10px);
+            background: var(--color-component-bg-100, #fff);
+            border: 1px solid var(--color-component-border-200, #d1d5db);
+            border-radius: 8px; padding: 8px 10px; pointer-events: none;
+            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12); z-index: 5;
+            min-width: 150px;
+        }
+        .chart-tip.flip { transform: translateX(calc(-100% - 10px)); }
+        .tip-date { font-size: 11px; font-weight: 700; color: var(--color-text-100, #0f172a); margin-bottom: 4px; }
+        .tip-row { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 1px 0; }
+        .tip-name { color: var(--color-component-color-200, #475569); flex: 1; }
+        .tip-val { font-weight: 700; color: var(--color-text-100, #0f172a); font-variant-numeric: tabular-nums; }
 
         /* ── HULO shared hero + help pattern ─────────────────────── */
         .hulo-hero {
@@ -664,6 +811,134 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     channelId: number | null = null;
     channels: Array<{ id: number; code: string }> = [];
 
+    // ── Daily-activity chart ────────────────────────────────────────
+    // Series colors are FIXED per series (identity), validated for
+    // CVD separation + lightness on both admin surfaces — see the
+    // :host CSS vars. Toggling a series never repaints the others.
+    daily: Array<{ day: string; visitors: number; sessions: number; events: number; pageviews: number }> = [];
+    seriesDefs = [
+        { key: 'visitors', label: 'Unique visitors', color: 'var(--hulo-s1)' },
+        { key: 'sessions', label: 'Sessions', color: 'var(--hulo-s2)' },
+        { key: 'pageviews', label: 'Page views', color: 'var(--hulo-s3)' },
+        { key: 'events', label: 'Events', color: 'var(--hulo-s4)' },
+    ];
+    seriesOn: Record<string, boolean> = { visitors: true, sessions: true, pageviews: false, events: false };
+    chart: {
+        L: number; R: number;
+        ticks: Array<{ y: number; label: string }>;
+        xlabels: Array<{ x: number; label: string }>;
+        lines: Array<{ key: string; label: string; color: string; points: string; ys: number[] }>;
+        xs: number[];
+        days: Array<{ label: string; values: Record<string, number> }>;
+    } | null = null;
+    hoverIdx: number | null = null;
+
+    // ── Collapsible sections (persisted) ────────────────────────────
+    sectionOpen: Record<string, boolean> = { chart: true, funnel: true, top: true, exit: true, visitors: true };
+    private readonly prefsKey = 'hulo-visitor-journey-prefs';
+
+    private restorePrefs(): void {
+        try {
+            const p = JSON.parse(localStorage.getItem(this.prefsKey) || '{}');
+            if (p.series && typeof p.series === 'object') Object.assign(this.seriesOn, p.series);
+            if (p.sections && typeof p.sections === 'object') Object.assign(this.sectionOpen, p.sections);
+            // Never restore into a state with zero visible series.
+            if (!this.seriesDefs.some(sd => this.seriesOn[sd.key])) this.seriesOn['visitors'] = true;
+        } catch { /* corrupted prefs — fall back to defaults */ }
+    }
+
+    private savePrefs(): void {
+        try {
+            localStorage.setItem(this.prefsKey, JSON.stringify({ series: this.seriesOn, sections: this.sectionOpen }));
+        } catch { /* storage full/blocked — non-fatal */ }
+    }
+
+    toggleSection(key: string): void {
+        this.sectionOpen[key] = !this.sectionOpen[key];
+        this.savePrefs();
+        this.cdr.markForCheck();
+    }
+
+    toggleSeries(key: string): void {
+        // Keep at least one series visible.
+        const activeCount = this.seriesDefs.filter(sd => this.seriesOn[sd.key]).length;
+        if (this.seriesOn[key] && activeCount <= 1) return;
+        this.seriesOn[key] = !this.seriesOn[key];
+        this.savePrefs();
+        this.rebuildChart();
+        this.cdr.markForCheck();
+    }
+
+    /** Nice ceiling for the y-axis: 1/2/5 × 10^n at or above v. */
+    private niceCeil(v: number): number {
+        if (v <= 0) return 1;
+        const mag = Math.pow(10, Math.floor(Math.log10(v)));
+        for (const m of [1, 2, 5, 10]) {
+            if (m * mag >= v) return m * mag;
+        }
+        return 10 * mag;
+    }
+
+    private rebuildChart(): void {
+        const days = this.daily || [];
+        const active = this.seriesDefs.filter(sd => this.seriesOn[sd.key]);
+        if (days.length === 0 || active.length === 0) { this.chart = null; this.hoverIdx = null; return; }
+        const L = 44, R = 788, T = 10, B = 216;
+        const maxVal = Math.max(1, ...days.map(d => Math.max(...active.map(sd => Number((d as any)[sd.key]) || 0))));
+        const yMax = this.niceCeil(maxVal);
+        const x = (i: number) => (days.length === 1 ? (L + R) / 2 : L + (i * (R - L)) / (days.length - 1));
+        const y = (v: number) => B - (v / yMax) * (B - T);
+        const fmtDay = (raw: string) => {
+            const d = new Date(raw);
+            return isNaN(d.getTime()) ? String(raw).slice(5) : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+        };
+        const xs = days.map((_, i) => Math.round(x(i) * 10) / 10);
+        const lines = active.map(sd => {
+            const ys = days.map(d => Math.round(y(Number((d as any)[sd.key]) || 0) * 10) / 10);
+            return {
+                key: sd.key, label: sd.label, color: sd.color, ys,
+                points: xs.map((px, i) => px + ',' + ys[i]).join(' '),
+            };
+        });
+        const ticks = [0, 0.5, 1].map(f => ({
+            y: Math.round(y(yMax * f) * 10) / 10,
+            label: String(Math.round(yMax * f)),
+        }));
+        const labelEvery = Math.max(1, Math.ceil(days.length / 6));
+        const xlabels = days
+            .map((d, i) => ({ i, d }))
+            .filter(({ i }) => i % labelEvery === 0 || i === days.length - 1)
+            .map(({ i, d }) => ({ x: xs[i], label: fmtDay(d.day) }));
+        this.chart = {
+            L, R, ticks, xlabels, lines, xs,
+            days: days.map(d => ({
+                label: fmtDay(d.day),
+                values: {
+                    visitors: Number(d.visitors) || 0,
+                    sessions: Number(d.sessions) || 0,
+                    pageviews: Number(d.pageviews) || 0,
+                    events: Number(d.events) || 0,
+                },
+            })),
+        };
+    }
+
+    onChartMove(ev: MouseEvent, svg: SVGSVGElement): void {
+        if (!this.chart || this.chart.xs.length === 0) return;
+        const rect = svg.getBoundingClientRect();
+        const vx = ((ev.clientX - rect.left) / rect.width) * 800;
+        let best = 0, bestDist = Infinity;
+        for (let i = 0; i < this.chart.xs.length; i++) {
+            const d = Math.abs(this.chart.xs[i] - vx);
+            if (d < bestDist) { bestDist = d; best = i; }
+        }
+        if (this.hoverIdx !== best) { this.hoverIdx = best; this.cdr.markForCheck(); }
+    }
+
+    onChartLeave(): void {
+        if (this.hoverIdx !== null) { this.hoverIdx = null; this.cdr.markForCheck(); }
+    }
+
     summary = { visitors: 0, sessions: 0, pageviews: 0, avgTimeMs: 0 };
     funnel: FunnelStage[] = [];
 
@@ -708,6 +983,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     ) {}
 
     ngOnInit() {
+        this.restorePrefs();
         this.loadChannels();
         this.loadAll();
         this.connectLive();
@@ -825,6 +1101,8 @@ export class VisitorsComponent implements OnInit, OnDestroy {
             this.fetchRecent(),
         ]).then(([summaryRes, funnelRes]) => {
             this.summary = summaryRes?.totals || this.summary;
+            this.daily = Array.isArray(summaryRes?.daily) ? summaryRes.daily : [];
+            this.rebuildChart();
             this.funnel = funnelRes?.stages || [];
             this.loading = false;
             this.cdr.markForCheck();
