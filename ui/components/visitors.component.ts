@@ -127,29 +127,40 @@ interface VisitorProfile {
         </vdr-page-block>
 
         <vdr-page-block>
-            <div class="summary-row">
-                <div class="summary-card live-card">
-                    <div class="num">
+            <div class="kpi-row">
+                <div class="kpi live-kpi">
+                    <div class="kpi-label">
                         <span class="live-dot" [class.connected]="liveConnected"></span>
-                        {{ liveCount | number }}
+                        Live now
                     </div>
-                    <div class="lbl">Live now <span class="live-meta" *ngIf="liveUpdatedAt">· refreshed {{ liveUpdatedAt | date:'HH:mm:ss' }}</span></div>
+                    <div class="kpi-num">{{ liveCount | number }}</div>
+                    <div class="kpi-sub" *ngIf="liveUpdatedAt">refreshed {{ liveUpdatedAt | date:'HH:mm:ss' }}</div>
                 </div>
-                <div class="summary-card">
-                    <div class="num">{{ summary.visitors | number }}</div>
-                    <div class="lbl">Unique visitors</div>
+                <div class="kpi">
+                    <div class="kpi-label">Unique visitors</div>
+                    <div class="kpi-num">{{ summary.visitors | number }}</div>
+                    <div class="kpi-delta" [class.up]="delta('visitors') > 0" [class.down]="delta('visitors') < 0">
+                        {{ deltaLabel('visitors') }}
+                    </div>
                 </div>
-                <div class="summary-card">
-                    <div class="num">{{ summary.sessions | number }}</div>
-                    <div class="lbl">Sessions</div>
+                <div class="kpi">
+                    <div class="kpi-label">Sessions</div>
+                    <div class="kpi-num">{{ summary.sessions | number }}</div>
+                    <div class="kpi-delta" [class.up]="delta('sessions') > 0" [class.down]="delta('sessions') < 0">
+                        {{ deltaLabel('sessions') }}
+                    </div>
                 </div>
-                <div class="summary-card">
-                    <div class="num">{{ summary.pageviews | number }}</div>
-                    <div class="lbl">Page views</div>
+                <div class="kpi">
+                    <div class="kpi-label">Page views</div>
+                    <div class="kpi-num">{{ summary.pageviews | number }}</div>
+                    <div class="kpi-delta" [class.up]="delta('pageviews') > 0" [class.down]="delta('pageviews') < 0">
+                        {{ deltaLabel('pageviews') }}
+                    </div>
                 </div>
-                <div class="summary-card">
-                    <div class="num">{{ humanTime(summary.avgTimeMs) }}</div>
-                    <div class="lbl">Avg time on page</div>
+                <div class="kpi">
+                    <div class="kpi-label">Pages / session</div>
+                    <div class="kpi-num">{{ pagesPerSession() }}</div>
+                    <div class="kpi-sub">avg {{ humanTime(summary.avgTimeMs) }} on page</div>
                 </div>
             </div>
 
@@ -248,16 +259,68 @@ interface VisitorProfile {
                         <clr-icon shape="angle" [attr.dir]="sectionOpen['funnel'] ? 'down' : 'right'"></clr-icon>
                     </button>
                     <ng-container *ngIf="sectionOpen['funnel']">
-                    <div *ngIf="funnel.length === 0" class="muted pad">No data yet.</div>
-                    <div class="funnel" *ngIf="funnel.length > 0">
-                        <div class="funnel-row" *ngFor="let s of funnel">
-                            <div class="funnel-label">{{ s.label }}</div>
-                            <div class="funnel-bar">
-                                <div class="funnel-bar-fill" [style.width.%]="funnelPct(s)"></div>
+                    <div *ngIf="funnel.length === 0" class="empty-note">No funnel data in this range yet.</div>
+                    <ng-container *ngIf="funnel.length > 0">
+                        <div class="funnel-headline" *ngIf="overallConversion() !== null">
+                            <span class="funnel-headline-num">{{ overallConversion() }}%</span>
+                            of visitors reach checkout confirmation
+                        </div>
+                        <div class="funnel">
+                            <div class="funnel-row" *ngFor="let s of funnel; let i = index">
+                                <div class="funnel-label">{{ s.label }}</div>
+                                <div class="funnel-track">
+                                    <div class="funnel-bar-fill" [style.width.%]="funnelPct(s)"></div>
+                                </div>
+                                <div class="funnel-num">
+                                    <strong>{{ s.visitors | number }}</strong>
+                                    <span class="funnel-pct" *ngIf="i > 0">{{ funnelPct(s) | number:'1.0-1' }}%</span>
+                                </div>
                             </div>
-                            <div class="funnel-num">
-                                <strong>{{ s.visitors | number }}</strong>
-                                <span class="muted" *ngIf="s !== funnel[0]"> ({{ funnelPct(s) | number:'1.0-1' }}%)</span>
+                        </div>
+                    </ng-container>
+                    </ng-container>
+                </div>
+            </div>
+        </vdr-page-block>
+
+        <!-- ── Audience & acquisition: where visitors come from, what
+             they use. Sources uses the existing (previously unsurfaced)
+             endpoint; countries/devices use the new breakdown endpoint.
+             All bars are one-hue magnitude encodings on the brand hue. -->
+        <vdr-page-block>
+            <div class="card">
+                <div class="card-block">
+                    <button type="button" class="collapse-head" (click)="toggleSection('audience')" [attr.aria-expanded]="sectionOpen['audience']">
+                        <h3 class="card-title">Audience &amp; acquisition <span class="muted">(last {{ days }} days)</span></h3>
+                        <clr-icon shape="angle" [attr.dir]="sectionOpen['audience'] ? 'down' : 'right'"></clr-icon>
+                    </button>
+                    <ng-container *ngIf="sectionOpen['audience']">
+                    <div class="aud-grid">
+                        <div class="aud-col">
+                            <h4 class="aud-title">Traffic sources</h4>
+                            <div *ngIf="sources.length === 0" class="empty-note">No source data yet.</div>
+                            <div class="mini-row" *ngFor="let r of sources">
+                                <span class="mini-label" [title]="r.source + ' / ' + r.medium">{{ r.source }}<span class="mini-medium"> · {{ r.medium }}</span></span>
+                                <span class="mini-track"><span class="mini-fill" [style.width.%]="miniPct(r.visitors, sourcesMax)"></span></span>
+                                <span class="mini-num">{{ r.visitors | number }}</span>
+                            </div>
+                        </div>
+                        <div class="aud-col">
+                            <h4 class="aud-title">Countries</h4>
+                            <div *ngIf="breakdown.countries.length === 0" class="empty-note">No location data yet.</div>
+                            <div class="mini-row" *ngFor="let r of breakdown.countries">
+                                <span class="mini-label">{{ r.label }}</span>
+                                <span class="mini-track"><span class="mini-fill" [style.width.%]="miniPct(r.visitors, breakdownMax('countries'))"></span></span>
+                                <span class="mini-num">{{ r.visitors | number }}</span>
+                            </div>
+                        </div>
+                        <div class="aud-col">
+                            <h4 class="aud-title">Devices</h4>
+                            <div *ngIf="breakdown.devices.length === 0" class="empty-note">No device data yet.</div>
+                            <div class="mini-row" *ngFor="let r of breakdown.devices">
+                                <span class="mini-label">{{ r.label }}</span>
+                                <span class="mini-track"><span class="mini-fill" [style.width.%]="miniPct(r.visitors, breakdownMax('devices'))"></span></span>
+                                <span class="mini-num">{{ r.visitors | number }}</span>
                             </div>
                         </div>
                     </div>
@@ -534,6 +597,44 @@ interface VisitorProfile {
     styles: [`
         :host { color: var(--color-text-100, inherit); display: block; }
 
+        /* ── Unified card + table system ─────────────────────────── */
+        .card {
+            background: var(--color-component-bg-100, #fff);
+            border: 1px solid var(--color-component-border-200, #e2e8f0);
+            border-radius: 12px; overflow: hidden;
+        }
+        .card-block { padding: 18px 20px; }
+        .card-title { font-size: 15px; font-weight: 700; color: var(--color-text-100, #0f172a); margin: 0; }
+        .card-title .muted { font-weight: 500; font-size: 12px; }
+        .muted { color: var(--color-component-color-300, #64748b); }
+        .empty-note { padding: 20px 0; font-size: 13px; color: var(--color-component-color-300, #64748b); }
+        .table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .table th {
+            text-align: left; font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
+            text-transform: uppercase; color: var(--color-component-color-300, #64748b);
+            padding: 8px 10px; border-bottom: 1px solid var(--color-component-border-200, #e2e8f0);
+        }
+        .table td { padding: 9px 10px; border-bottom: 1px solid var(--color-component-border-100, #f1f5f9); color: var(--color-text-100, inherit); }
+        .table tbody tr:hover { background: var(--color-component-bg-200, #f8fafc); }
+        .table .num-col { text-align: right; font-variant-numeric: tabular-nums; }
+        .table th.num-col { text-align: right; }
+        .url { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+        .help-text { font-size: 11px; color: var(--color-component-color-300, #64748b); max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding-top: 12px; font-size: 12px; }
+
+        /* ── Audience & acquisition mini-bars (one-hue magnitude) ── */
+        .aud-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 24px; }
+        .aud-title {
+            font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+            color: var(--color-component-color-300, #64748b); margin: 0 0 10px;
+        }
+        .mini-row { display: grid; grid-template-columns: minmax(90px, 140px) 1fr 48px; gap: 8px; align-items: center; padding: 3px 0; }
+        .mini-label { font-size: 12px; color: var(--color-text-100, #0f172a); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .mini-medium { color: var(--color-component-color-300, #64748b); }
+        .mini-track { height: 8px; background: var(--color-component-bg-200, #f1f5f9); border-radius: 999px; overflow: hidden; }
+        .mini-fill { display: block; height: 100%; background: var(--color-primary-500, #f59e0b); border-radius: 999px; }
+        .mini-num { font-size: 12px; text-align: right; color: var(--color-component-color-200, #475569); font-variant-numeric: tabular-nums; }
+
         /* ── Chart series colors — categorical identity, fixed order.
            Validated (scripts/validate_palette.js): light set passes all
            six checks on the light admin surface; dark steps pass on
@@ -666,9 +767,9 @@ interface VisitorProfile {
                 box-shadow: 0 0 0 3px rgba(245,158,11,0.25); }
             .range { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 8px 0; }
             .range .btn { min-height: 40px; min-width: 48px; padding: 6px 12px; font-size: 13px; }
-            .summary-row { gap: 8px; }
-            .summary-card { min-width: 0; flex-basis: calc(50% - 4px); padding: 12px 14px; }
-            .summary-card .num { font-size: 20px; }
+            .kpi-row { gap: 8px; }
+            .kpi { padding: 12px 14px; }
+            .kpi-num { font-size: 20px; }
             .range { display: block; margin: 8px 0; }
             .two-col { grid-template-columns: 1fr; }
             .funnel-row { grid-template-columns: 1fr; gap: 4px; padding: 8px 0; border-bottom: 1px solid var(--color-component-border-200); }
@@ -679,33 +780,36 @@ interface VisitorProfile {
             .update-banner .actions { width: 100%; justify-content: flex-end; }
         }
         @media (max-width: 380px) {
-            .summary-card { flex-basis: 100%; }
+            .kpi-row { grid-template-columns: 1fr 1fr; }
         }
 
         .range { font-size: 12px; color: var(--color-component-color-300); margin-right: 8px; }
         .range .btn { padding: 2px 8px; min-width: 0; }
         .range .btn.active { font-weight: 700; color: var(--color-primary-500, #1d4ed8); }
-        .summary-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
-        .summary-card {
-            flex: 1; min-width: 130px; padding: 16px 20px;
-            border: 1px solid var(--color-component-border-200);
-            border-radius: 6px;
-            background: var(--color-component-bg-100);
+        /* ── KPI stat tiles ─────────────────────────────────────── */
+        .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+        .kpi {
+            background: var(--color-component-bg-100, #fff);
+            border: 1px solid var(--color-component-border-200, #e2e8f0);
+            border-radius: 12px; padding: 16px 18px; min-width: 0;
         }
-        .summary-card .num { font-size: 24px; font-weight: 700; }
-        .summary-card .lbl { font-size: 11px; color: var(--color-component-color-300); margin-top: 4px; }
-
-        .live-card { border-left: 3px solid #ef4444; }
-        .live-card .num { display: inline-flex; align-items: center; gap: 8px; }
-        .live-dot {
-            display: inline-block; width: 10px; height: 10px; border-radius: 50%;
-            background: #9ca3af; box-shadow: 0 0 0 0 rgba(156,163,175,.4);
+        .kpi-label {
+            display: flex; align-items: center; gap: 6px;
+            font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+            text-transform: uppercase; color: var(--color-component-color-300, #64748b);
         }
-        .live-dot.connected {
-            background: #ef4444;
-            animation: live-pulse 1.6s ease-in-out infinite;
+        .kpi-num {
+            margin-top: 6px; font-size: 26px; font-weight: 700; line-height: 1.1;
+            color: var(--color-text-100, #0f172a);
+            font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
         }
-        .live-meta { color: var(--color-component-color-300); font-size: 10px; font-weight: 400; }
+        .kpi-delta { margin-top: 4px; font-size: 12px; font-weight: 600; color: var(--color-component-color-300, #64748b); }
+        .kpi-delta.up { color: #047857; }
+        .kpi-delta.down { color: #b91c1c; }
+        .kpi-sub { margin-top: 4px; font-size: 12px; color: var(--color-component-color-300, #64748b); }
+        .live-kpi { border-left: 4px solid #10b981; }
+        .live-dot { width: 8px; height: 8px; border-radius: 999px; background: #9ca3af; display: inline-block; }
+        .live-dot.connected { background: #10b981; box-shadow: 0 0 0 3px rgba(16,185,129,0.2); }
         @keyframes live-pulse {
             0%   { box-shadow: 0 0 0 0 rgba(239,68,68,.6); }
             70%  { box-shadow: 0 0 0 10px rgba(239,68,68,0); }
@@ -735,16 +839,23 @@ interface VisitorProfile {
         tr.clickable { cursor: pointer; }
         tr.clickable:hover { background: var(--color-component-bg-200); }
 
-        .funnel { display: flex; flex-direction: column; gap: 8px; }
-        .funnel-row { display: grid; grid-template-columns: 200px 1fr 140px; gap: 12px; align-items: center; }
-        .funnel-label { font-size: 13px; font-weight: 500; }
-        .funnel-bar {
-            height: 24px; background: var(--color-component-bg-200);
-            border-radius: 4px; overflow: hidden;
-            border: 1px solid var(--color-component-border-200);
+        /* ── Funnel ─────────────────────────────────────────────── */
+        .funnel-headline {
+            display: flex; align-items: baseline; gap: 8px; margin-bottom: 14px;
+            font-size: 13px; color: var(--color-component-color-200, #475569);
         }
-        .funnel-bar-fill { height: 100%; background: linear-gradient(90deg, #1d4ed8, #3b82f6); }
-        .funnel-num { font-size: 13px; }
+        .funnel-headline-num { font-size: 24px; font-weight: 700; color: var(--color-text-100, #0f172a); font-variant-numeric: tabular-nums; }
+        .funnel { display: flex; flex-direction: column; gap: 10px; }
+        .funnel-row { display: grid; grid-template-columns: 200px 1fr 130px; gap: 12px; align-items: center; }
+        .funnel-label { font-size: 13px; font-weight: 600; color: var(--color-component-color-200, #475569); text-align: right; }
+        .funnel-track { height: 22px; background: var(--color-component-bg-200, #f1f5f9); border-radius: 6px; overflow: hidden; }
+        .funnel-bar-fill { height: 100%; background: var(--color-primary-500, #f59e0b); border-radius: 6px 4px 4px 6px; min-width: 2px; transition: width 0.3s ease; }
+        .funnel-num { font-size: 13px; color: var(--color-text-100, #0f172a); font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .funnel-pct { margin-left: 8px; color: var(--color-component-color-300, #64748b); font-size: 12px; }
+        @media (max-width: 640px) {
+            .funnel-row { grid-template-columns: 1fr; gap: 4px; }
+            .funnel-label { text-align: left; }
+        }
 
         .pager {
             display: flex; align-items: center; justify-content: flex-end; gap: 8px;
@@ -834,7 +945,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     hoverIdx: number | null = null;
 
     // ── Collapsible sections (persisted) ────────────────────────────
-    sectionOpen: Record<string, boolean> = { chart: true, funnel: true, top: true, exit: true, visitors: true };
+    sectionOpen: Record<string, boolean> = { chart: true, funnel: true, audience: true, top: true, exit: true, visitors: true };
     private readonly prefsKey = 'hulo-visitor-journey-prefs';
 
     private restorePrefs(): void {
@@ -937,6 +1048,72 @@ export class VisitorsComponent implements OnInit, OnDestroy {
 
     onChartLeave(): void {
         if (this.hoverIdx !== null) { this.hoverIdx = null; this.cdr.markForCheck(); }
+    }
+
+    // ── KPI deltas vs the previous period ───────────────────────────
+    previous: { visitors: number; sessions: number; pageviews: number; avgTimeMs: number } | null = null;
+
+    delta(key: 'visitors' | 'sessions' | 'pageviews'): number {
+        const prev = this.previous?.[key] ?? 0;
+        const cur = (this.summary as any)[key] ?? 0;
+        if (!prev) return 0;
+        return Math.round(((cur - prev) / prev) * 100);
+    }
+
+    deltaLabel(key: 'visitors' | 'sessions' | 'pageviews'): string {
+        const prev = this.previous?.[key] ?? 0;
+        if (!prev) return 'no prior data';
+        const d = this.delta(key);
+        const arrow = d > 0 ? '▲' : d < 0 ? '▼' : '—';
+        return `${arrow} ${Math.abs(d)}% vs previous ${this.days}d`;
+    }
+
+    pagesPerSession(): string {
+        const s = this.summary.sessions || 0;
+        if (!s) return '—';
+        return (this.summary.pageviews / s).toFixed(1);
+    }
+
+    // ── Funnel derived numbers ──────────────────────────────────────
+    overallConversion(): string | null {
+        if (this.funnel.length < 2 || !this.funnel[0].visitors) return null;
+        const last = this.funnel[this.funnel.length - 1];
+        return ((last.visitors / this.funnel[0].visitors) * 100).toFixed(1);
+    }
+
+    // ── Audience & acquisition ──────────────────────────────────────
+    sources: Array<{ source: string; medium: string; visitors: number }> = [];
+    sourcesMax = 1;
+    breakdown: { countries: Array<{ label: string; visitors: number }>; devices: Array<{ label: string; visitors: number }>; browsers: Array<{ label: string; visitors: number }> } = { countries: [], devices: [], browsers: [] };
+
+    miniPct(v: number, max: number): number {
+        return max > 0 ? Math.max(2, (v / max) * 100) : 0;
+    }
+
+    breakdownMax(key: 'countries' | 'devices' | 'browsers'): number {
+        return Math.max(1, ...this.breakdown[key].map(r => r.visitors));
+    }
+
+    private loadAudience(): void {
+        this.http.get<any>(`/ees/visitors/sources?${this.q()}&take=6`).subscribe({
+            next: (r) => {
+                this.sources = (r?.sources || []).slice(0, 6);
+                this.sourcesMax = Math.max(1, ...this.sources.map((x) => x.visitors));
+                this.cdr.markForCheck();
+            },
+            error: () => { /* panel shows empty-note */ },
+        });
+        this.http.get<any>(`/ees/visitors/breakdown?${this.q()}`).subscribe({
+            next: (r) => {
+                this.breakdown = {
+                    countries: r?.countries || [],
+                    devices: r?.devices || [],
+                    browsers: r?.browsers || [],
+                };
+                this.cdr.markForCheck();
+            },
+            error: () => { /* panel shows empty-note */ },
+        });
     }
 
     summary = { visitors: 0, sessions: 0, pageviews: 0, avgTimeMs: 0 };
@@ -1093,6 +1270,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
 
     loadAll() {
         this.loading = true;
+        this.loadAudience();
         Promise.all([
             this.http.get<any>(`/ees/visitors/summary?${this.q()}`).toPromise(),
             this.http.get<any>(`/ees/visitors/funnel?${this.q()}`).toPromise(),
@@ -1102,6 +1280,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
         ]).then(([summaryRes, funnelRes]) => {
             this.summary = summaryRes?.totals || this.summary;
             this.daily = Array.isArray(summaryRes?.daily) ? summaryRes.daily : [];
+            this.previous = summaryRes?.previous || null;
             this.rebuildChart();
             this.funnel = funnelRes?.stages || [];
             this.loading = false;

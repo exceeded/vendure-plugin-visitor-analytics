@@ -307,6 +307,18 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
              WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}`,
             [days, ...w.params],
         );
+        // Previous period of identical length, immediately prior —
+        // powers the KPI delta chips ("+12% vs previous 30 days").
+        const [prev] = await this.connection.rawConnection.query(
+            `SELECT COUNT(DISTINCT visitorId) AS totalVisitors,
+                    COUNT(DISTINCT sessionId) AS totalSessions,
+                    SUM(type='pageview')      AS totalPageviews,
+                    AVG(CASE WHEN type='unload' AND timeOnPageMs > 0 THEN timeOnPageMs END) AS avgTimeMs
+             FROM visitor_event
+             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
+               AND createdAt <  DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}`,
+            [days * 2, days, ...w.params],
+        );
         return res.json({
             days, channelId,
             totals: {
@@ -314,6 +326,12 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                 sessions: Number(totalSessions) || 0,
                 pageviews: Number(totalPageviews) || 0,
                 avgTimeMs: Math.round(Number(avgTimeMs) || 0),
+            },
+            previous: {
+                visitors: Number(prev?.totalVisitors) || 0,
+                sessions: Number(prev?.totalSessions) || 0,
+                pageviews: Number(prev?.totalPageviews) || 0,
+                avgTimeMs: Math.round(Number(prev?.avgTimeMs) || 0),
             },
             daily: rows.map((r: any) => ({
                 day: r.day,
@@ -569,6 +587,39 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                 code: String(r.code),
                 token: String(r.token),
             })),
+        });
+    }
+
+    /** Audience breakdown — top countries, device split and browser
+     *  split for the range. One endpoint, three cheap grouped counts,
+     *  all channel-aware. Feeds the dashboard's "Audience" panel. */
+    @Get('visitors/breakdown')
+    async breakdown(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        const days = clampInt((req.query as any).days, 30, 1, 365);
+        const channelId = parseChannelId((req.query as any).channelId);
+        const w = channelWhere(channelId);
+        const grouped = (col: string) => this.connection.rawConnection.query(
+            `SELECT ${col} AS label, COUNT(DISTINCT visitorId) AS visitors
+             FROM visitor_event
+             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+               AND ${col} IS NOT NULL AND ${col} <> ''
+             GROUP BY ${col}
+             ORDER BY visitors DESC
+             LIMIT 8`,
+            [days, ...w.params],
+        );
+        const [countries, devices, browsers] = await Promise.all([
+            grouped('country'), grouped('device'), grouped('browser'),
+        ]);
+        const shape = (rows: any[]) => rows.map(r => ({
+            label: String(r.label), visitors: Number(r.visitors) || 0,
+        }));
+        return res.json({
+            days, channelId,
+            countries: shape(countries),
+            devices: shape(devices),
+            browsers: shape(browsers),
         });
     }
 
