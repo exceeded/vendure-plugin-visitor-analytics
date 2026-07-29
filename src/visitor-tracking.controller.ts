@@ -204,11 +204,26 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
             }
         }
 
-        // Read + verify the cookies. When a signingSecret is configured,
-        // we expect each cookie to be `<id>.<hmac>` and reject tampered
-        // values. Without a secret, we accept bare ids (legacy).
-        let visitorId = this.readSignedCookie(cookies[COOKIE_VISITOR], opts.signingSecret);
-        let sessionId = this.readSignedCookie(cookies[COOKIE_SESSION], opts.signingSecret);
+        // Identity resolution, in priority order:
+        //   1. body.visitorId / body.sessionId — FIRST-PARTY ids the
+        //      storefront tracker persists in its own localStorage.
+        //      This is the only mechanism that works cross-site: the
+        //      storefronts (license-dock.com / elite-software.co.uk)
+        //      call this endpoint on elite.charity, and SameSite=Lax
+        //      cookies are never attached to cross-site fetches (and
+        //      Safari blocks third-party cookies entirely). Before
+        //      body ids existed, EVERY event minted a fresh visitor +
+        //      session, making uniques === sessions === pageviews.
+        //   2. The ees_vid / ees_sid cookies — still honoured for
+        //      same-site installs.
+        //   3. Freshly minted ids (first visit).
+        const ID_RE = /^[a-f0-9]{16,64}$/i;
+        const bodyVid = typeof body?.visitorId === 'string' && ID_RE.test(body.visitorId)
+            ? body.visitorId.toLowerCase() : null;
+        const bodySid = typeof body?.sessionId === 'string' && ID_RE.test(body.sessionId)
+            ? body.sessionId.toLowerCase() : null;
+        let visitorId = bodyVid || this.readSignedCookie(cookies[COOKIE_VISITOR], opts.signingSecret);
+        let sessionId = bodySid || this.readSignedCookie(cookies[COOKIE_SESSION], opts.signingSecret);
         let issuedVisitor = false;
         let issuedSession = false;
         if (!visitorId || !/^[a-f0-9]{16,64}$/i.test(visitorId)) {
