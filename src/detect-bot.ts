@@ -33,7 +33,11 @@ export function isBotUa(ua: string | null | undefined): boolean {
 export function anonymizeIp(ip: string | null): string | null {
     if (!ip) return null;
     if (ip.includes(':')) {
-        // IPv6 — keep first 3 hextets.
+        // IPv6 — keep first 3 hextets. An already-abbreviated address
+        // (contains `::`) can't be sliced reliably by ':' — splitting
+        // "fe80::1" yields an empty middle part and re-joining would
+        // produce a malformed "fe80::1::", so leave those as-is.
+        if (ip.includes('::')) return ip;
         const parts = ip.split(':');
         if (parts.length < 3) return ip;
         return parts.slice(0, 3).join(':') + '::';

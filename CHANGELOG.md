@@ -5,6 +5,17 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] — 2026-08-02
+
+### Fixed
+- `anonymizeIp` produced a malformed address (e.g. `fe80::1::`) for
+  already-abbreviated IPv6 inputs. Abbreviated addresses are now left
+  unchanged; full-form IPv6 still truncates to the first three hextets.
+
+### Added
+- Unit test suites: URL glob matcher, bot detection + IP anonymisation,
+  proxy-header extraction.
+
 ## [0.8.4] — 2026-07-04
 
 ### Added
