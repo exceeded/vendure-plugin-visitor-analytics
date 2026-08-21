@@ -1,6 +1,6 @@
 {
   "name": "@huloglobal/vendure-plugin-visitor-analytics",
-  "version": "0.11.1",
+  "version": "0.12.0",
   "description": "Full-funnel visitor analytics for Vendure storefronts — pageviews, time-on-page, session journey, exit pages, funnel drop-off, and per-visitor profile drawer with parsed user-agent + MaxMind GeoLite2 enrichment. Auto-issues visitor + session cookies on first request; logs guest and signed-in events against the same visitor id so the journey survives login.",
   "license": "AGPL-3.0-or-later",
   "author": "Wayne Garrison <wayne@garrison.me.uk>",
@@ -27,15 +27,14 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@huloglobal/vendure-licence-sdk": "^0.6.0",
-    "ua-parser-js": "^1.0.37",
-    "geolite2-redist": "^3.1.0",
     "@maxmind/geoip2-node": "^5.0.0",
-    "graphql-tag": "^2.12.7"
+    "geolite2-redist": "^3.1.0",
+    "graphql-tag": "^2.12.7",
+    "ua-parser-js": "^1.0.37"
   },
   "peerDependencies": {
-    "@vendure/core": ">=3.5.0 <4.0.0",
     "@nestjs/common": ">=10.0.0",
+    "@vendure/core": ">=3.5.0 <4.0.0",
     "typeorm": ">=0.3.0"
   },
   "devDependencies": {

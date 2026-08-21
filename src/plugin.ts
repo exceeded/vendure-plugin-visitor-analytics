@@ -1,5 +1,5 @@
 import { PluginCommonModule, Type, VendurePlugin } from '@vendure/core';
-import { fingerprintPublicKey, Heartbeat, LicenceStatus, RetentionOptions, RevocationChecker, UpdateChecker, verifyLicence, warnIfIncompatibleVendure } from '@huloglobal/vendure-licence-sdk';
+import { fingerprintPublicKey, Heartbeat, LicenceStatus, RetentionOptions, RevocationChecker, UpdateChecker, verifyLicence, warnIfIncompatibleVendure, EvaluationClient, EvaluationState} from '@huloglobal/vendure-licence-sdk';
 import { ConversionGoal } from './conversion-goal.entity';
 import { VisitorEvent } from './visitor-event.entity';
 import { AbandonedCart } from './abandoned-cart.entity';
@@ -137,6 +137,23 @@ export function getOptions(): typeof DEFAULT_OPTIONS & VisitorAnalyticsPluginOpt
     },
 })
 export class VisitorAnalyticsPlugin {
+    private static evalClientInternal: EvaluationClient | null = null;
+    static getEvalState(): EvaluationState | null { return VisitorAnalyticsPlugin.evalClientInternal?.getState() ?? null; }
+    static getEvalInstanceId(): string | null { return VisitorAnalyticsPlugin.evalClientInternal?.getInstanceId() ?? null; }
+    /** Licensed installs AND installs inside the 14-day server-anchored
+     *  evaluation window get the full feature set. After the window the
+     *  plugin drops to the free tier. */
+    static hasPremiumAccess(): boolean {
+        if (VisitorAnalyticsPlugin.licenceStatus?.valid) return true;
+        return !!VisitorAnalyticsPlugin.evalClientInternal?.getState()?.active;
+    }
+    static startEvaluation(): void {
+        if (!VisitorAnalyticsPlugin.evalClientInternal) {
+            VisitorAnalyticsPlugin.evalClientInternal = new EvaluationClient({ packageName: PKG_NAME, packageVersion: PKG_VERSION });
+            VisitorAnalyticsPlugin.evalClientInternal.start();
+        }
+    }
+
     private static revocation: RevocationChecker | null = null;
     private static updateChecker: UpdateChecker | null = null;
     private static heartbeat: Heartbeat | null = null;
@@ -179,6 +196,9 @@ export class VisitorAnalyticsPlugin {
         VisitorAnalyticsPlugin.licenceStatus = status;
 
         if (!status.valid) {
+            // Unlicensed: start the server-anchored 14-day full-featured
+            // evaluation; premium paths stay on until it expires.
+            VisitorAnalyticsPlugin.startEvaluation();
             // eslint-disable-next-line no-console
             console.warn(
                 `[@huloglobal/vendure-plugin-visitor-analytics] ${status.message}` +

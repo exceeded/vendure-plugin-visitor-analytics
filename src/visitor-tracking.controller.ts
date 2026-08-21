@@ -175,7 +175,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         // Tier-gate: unlicensed installs are capped at 100 events / UTC day.
         // Once the cap is hit, /track returns 200 with `skipped: 'free-tier-cap'`
         // so the storefront's beacon doesn't surface errors to end users.
-        if (!isLicensed(VisitorAnalyticsPlugin.getLicenceStatus())) {
+        if (!VisitorAnalyticsPlugin.hasPremiumAccess()) {
             const eventsLen = Array.isArray((body || {}).events) ? body.events.length : 1;
             if (!freeTierBudget.consume(eventsLen)) {
                 return res.json({ stored: 0, skipped: 'free-tier-cap', cap: FREE_TIER_DAILY_CAP });
@@ -628,7 +628,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         if (!requireAdmin(ctx, res)) return;
         const channelId = parseChannelId((req.query as any).channelId);
         const w = channelWhere(channelId);
-        if (!isLicensed(VisitorAnalyticsPlugin.getLicenceStatus())) {
+        if (!VisitorAnalyticsPlugin.hasPremiumAccess()) {
             return res.status(402).json(premiumFeatureError('vendure-plugin-visitor-analytics'));
         }
 
@@ -923,7 +923,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
     @Post('goals')
     async createGoal(@Ctx() ctx: RequestContext, @Body() body: any, @Res() res: Response) {
         if (!requireAdmin(ctx, res)) return;
-        if (!isLicensed(VisitorAnalyticsPlugin.getLicenceStatus())) {
+        if (!VisitorAnalyticsPlugin.hasPremiumAccess()) {
             return res.status(402).json(premiumFeatureError('vendure-plugin-visitor-analytics'));
         }
         const repo = this.connection.rawConnection.getRepository(ConversionGoal);
@@ -999,7 +999,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
     @Get('visitors/export.csv')
     async exportCsv(@Ctx() ctx: RequestContext, @Req() req: Request, @Res() res: Response) {
         if (!requireAdmin(ctx, res)) return;
-        if (!isLicensed(VisitorAnalyticsPlugin.getLicenceStatus())) {
+        if (!VisitorAnalyticsPlugin.hasPremiumAccess()) {
             return res.status(402).json(premiumFeatureError('vendure-plugin-visitor-analytics'));
         }
         const days = Math.min(Math.max(parseInt(String((req.query as any).days || '7'), 10) || 7, 1), 90);
