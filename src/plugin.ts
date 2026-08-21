@@ -1,5 +1,5 @@
-import { PluginCommonModule, Type, VendurePlugin } from '@vendure/core';
-import { fingerprintPublicKey, Heartbeat, LicenceStatus, RetentionOptions, RevocationChecker, UpdateChecker, verifyLicence, warnIfIncompatibleVendure, EvaluationClient, EvaluationState} from '@huloglobal/vendure-licence-sdk';
+import { PluginCommonModule, Type, VendurePlugin, TransactionalConnection } from '@vendure/core';
+import { fingerprintPublicKey, Heartbeat, LicenceStatus, RetentionOptions, RevocationChecker, UpdateChecker, verifyLicence, warnIfIncompatibleVendure, EvaluationClient, EvaluationState, LicenceStore } from '@huloglobal/vendure-licence-sdk';
 import { ConversionGoal } from './conversion-goal.entity';
 import { VisitorEvent } from './visitor-event.entity';
 import { AbandonedCart } from './abandoned-cart.entity';
@@ -154,6 +154,50 @@ export class VisitorAnalyticsPlugin {
         }
     }
 
+    private static licenceHost = '';
+
+    /** Verify + apply a licence key at runtime (admin-UI activation).
+     *  Identical checks to boot-time verification. */
+    static activateRuntimeLicence(key: string): LicenceStatus {
+        const status = verifyLicence({
+            licenceKey: key, pluginId: PLUGIN_ID, host: VisitorAnalyticsPlugin.licenceHost,
+            publicKey: HULO_PUBLIC_KEY, revokedIds: VisitorAnalyticsPlugin.revocation?.getRevokedIds(),
+        });
+        if (status.valid) {
+            VisitorAnalyticsPlugin.licenceStatus = status;
+            VisitorAnalyticsPlugin.evalClientInternal?.stop();
+        }
+        return status;
+    }
+
+    /** Drop an admin-activated key: back to unlicensed + evaluation. */
+    static deactivateRuntimeLicence(): void {
+        VisitorAnalyticsPlugin.licenceStatus = {
+            valid: false,
+            message: 'No licence key configured. The plugin will run in unlicensed (degraded) mode.',
+        } as LicenceStatus;
+        VisitorAnalyticsPlugin.startEvaluation();
+        VisitorAnalyticsPlugin.evalClientInternal?.start();
+    }
+
+    constructor(private connection: TransactionalConnection) {}
+
+    /** Apply an admin-activated licence key persisted in the DB. An
+     *  explicitly configured env/init key always wins. */
+    async onApplicationBootstrap() {
+        if (VisitorAnalyticsPlugin.licenceStatus?.valid) return;
+        try {
+            const store = new LicenceStore((sql, params) => this.connection.rawConnection.query(sql, params));
+            await store.ensureTable();
+            const stored = await store.load(PLUGIN_ID);
+            if (stored) {
+                const st = VisitorAnalyticsPlugin.activateRuntimeLicence(stored);
+                // eslint-disable-next-line no-console
+                if (st.valid) console.log(`[${PKG_NAME}] licence restored from admin activation — ${st.message}`);
+            }
+        } catch { /* store failures never affect boot */ }
+    }
+
     private static revocation: RevocationChecker | null = null;
     private static updateChecker: UpdateChecker | null = null;
     private static heartbeat: Heartbeat | null = null;
@@ -186,6 +230,7 @@ export class VisitorAnalyticsPlugin {
 
         const host = (options.publicBaseUrl || '')
             .replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+        VisitorAnalyticsPlugin.licenceHost = host;
         const status = verifyLicence({
             licenceKey: options.licenceKey,
             pluginId: PLUGIN_ID,

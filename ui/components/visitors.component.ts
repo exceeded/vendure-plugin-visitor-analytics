@@ -85,6 +85,27 @@ interface VisitorProfile {
             </div>
         </vdr-page-block>
 
+        <vdr-page-block *ngIf="licMeta && !licMeta.licensed">
+            <div class="lic-banner">
+                <div *ngIf="licMeta.tier === 'trial'">
+                    <strong>⏳ Full-featured evaluation</strong> —
+                    <ng-container *ngIf="licMeta.eval?.daysRemaining != null">
+                        <strong>{{ licMeta.eval.daysRemaining }} day{{ licMeta.eval.daysRemaining === 1 ? '' : 's' }} left</strong> with everything enabled.
+                    </ng-container>
+                    <ng-container *ngIf="licMeta.eval?.daysRemaining == null">everything is enabled.</ng-container>
+                    Afterwards the plugin drops to the free tier.
+                </div>
+                <div *ngIf="licMeta.tier !== 'trial'">
+                    <strong>🔓 Free tier</strong> — your evaluation has ended. Premium features are paused; your configuration is kept and reactivates instantly with a key.
+                </div>
+                <div class="lic-actions">
+                    <input class="lic-key" type="text" placeholder="Paste licence key (eyJhbGciOi…)" [(ngModel)]="licKeyInput" [disabled]="licActivating">
+                    <button class="gbtn gbtn-primary gbtn-sm" (click)="activateLicence()" [disabled]="licActivating || !licKeyInput">{{ licActivating ? 'Verifying…' : 'Activate' }}</button>
+                    <a href="https://huloglobal.com/vendure-plugins/visitor-analytics/" target="_blank" class="gbtn gbtn-outline gbtn-sm">Get a licence ↗</a>
+                </div>
+            </div>
+        </vdr-page-block>
+
         <vdr-page-block *ngIf="helpOpen">
             <div class="hulo-help-drawer">
                 <div class="hulo-help-grid">
@@ -595,6 +616,10 @@ interface VisitorProfile {
         </div>
     `,
     styles: [`
+        .lic-banner { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; padding:12px 16px; border-radius:10px; font-size:13px; background:var(--gb-tint-warn, #fef3c7); border:1px solid var(--gb-line-warn, #fcd34d); }
+        .lic-actions { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+        .lic-key { padding:5px 9px; border:1px solid var(--gb-ui-border, #d1d5db); border-radius:7px; font-size:12.5px; min-width:280px; background:#fff; color:#0f172a; }
+
         :host { color: var(--color-text-100, inherit); display: block; }
 
         /* ── Unified card + table system ─────────────────────────── */
@@ -1159,7 +1184,39 @@ export class VisitorsComponent implements OnInit, OnDestroy {
         private zone: NgZone,
     ) {}
 
+    licMeta: any = null;
+    licKeyInput = '';
+    licActivating = false;
+
+    loadLicMeta() {
+        this.http.get<any>('/ees/licence/status').subscribe({
+            next: m => { this.licMeta = m; this.cdr.markForCheck(); },
+            error: () => undefined,
+        });
+    }
+
+    activateLicence() {
+        const key = (this.licKeyInput || '').trim();
+        if (!key) return;
+        this.licActivating = true;
+        this.http.post<any>('/ees/licence/activate', { key }).subscribe({
+            next: r => {
+                this.licActivating = false;
+                this.licKeyInput = '';
+                this.notify.success(r?.message || 'Licence activated — all features enabled');
+                this.loadLicMeta();
+                this.cdr.markForCheck();
+            },
+            error: e => {
+                this.licActivating = false;
+                this.notify.error(e?.error?.message || 'That key did not validate — check it was copied completely');
+                this.cdr.markForCheck();
+            },
+        });
+    }
+
     ngOnInit() {
+        this.loadLicMeta();
         this.restorePrefs();
         this.loadChannels();
         this.loadAll();

@@ -6,8 +6,7 @@ import {
     RateLimiter,
     signValue,
     startRetentionSweeper,
-    verifySignedValue,
-} from '@huloglobal/vendure-licence-sdk';
+    verifySignedValue, LicenceStore } from '@huloglobal/vendure-licence-sdk';
 import { Ctx, Permission, RequestContext, TransactionalConnection } from '@vendure/core';
 import { Request, Response } from 'express';
 import { ConversionGoal } from './conversion-goal.entity';
@@ -102,6 +101,8 @@ function channelWhere(channelId: number | null, alias?: string): { sql: string; 
 }
 
 import { getRealIp, getResolvedCountry, getResolvedRegion } from './proxy-headers';
+
+const PLUGIN_ID_FOR_STORE = 'vendure-plugin-visitor-analytics';
 function realIp(req: Request): string | null { return getRealIp(req); }
 
 @Controller('ees')
@@ -162,6 +163,46 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
      * Cookies `ees_vid` (visitor) and `ees_sid` (session) are issued
      * on the first request and refreshed on every subsequent one.
      */
+
+    private licenceStore = new LicenceStore((sql: string, params?: any[]) => this.connection.rawConnection.query(sql, params));
+
+    /** Licence/evaluation state for the admin banner. */
+    @Get('licence/status')
+    async licenceState(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        const licence = VisitorAnalyticsPlugin.getLicenceStatus();
+        const ev = VisitorAnalyticsPlugin.getEvalState();
+        return res.json({
+            licensed: !!licence?.valid,
+            licenceMessage: licence?.valid ? '' : (licence?.message || 'No licence key configured'),
+            tier: licence?.valid ? 'paid' : (ev?.active ? 'trial' : 'free'),
+            eval: ev,
+        });
+    }
+
+    /** Admin-UI licence activation: paste-a-key, verified with the exact
+     *  boot-time checks, applied immediately and persisted. */
+    @Post('licence/activate')
+    async licenceActivate(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (!requireAdmin(ctx, res)) return;
+        const key = String(body?.key || '').trim();
+        if (!key) return res.status(400).json({ licensed: false, message: 'Paste your licence key first.' });
+        const status = VisitorAnalyticsPlugin.activateRuntimeLicence(key);
+        if (!status.valid) return res.status(400).json({ licensed: false, message: status.message || 'Invalid licence key.' });
+        await this.licenceStore.ensureTable();
+        await this.licenceStore.save(PLUGIN_ID_FOR_STORE, key);
+        return res.json({ licensed: true, message: status.message });
+    }
+
+    /** Remove an admin-activated key (env-configured keys unaffected). */
+    @Post('licence/deactivate')
+    async licenceDeactivate(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        await this.licenceStore.clear(PLUGIN_ID_FOR_STORE);
+        VisitorAnalyticsPlugin.deactivateRuntimeLicence();
+        return res.json({ licensed: false });
+    }
+
     @Post('track')
     async track(@Body() body: any, @Req() req: Request, @Res() res: Response) {
         // Lenient CORS — analytics ingestion must work cross-origin from

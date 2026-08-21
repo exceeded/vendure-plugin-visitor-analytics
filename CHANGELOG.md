@@ -5,6 +5,17 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] — 2026-08-21
+
+### Added
+- **In-admin licence activation.** A banner on the admin page shows the
+  evaluation countdown (or free-tier state) with a paste-your-key box:
+  the key is verified with the exact boot-time checks and activates
+  instantly — no .env edit, no redeploy. Persisted in the shared
+  hulo_licence_store table and restored on boot; env/init keys always
+  take precedence. New licence/status, licence/activate and
+  licence/deactivate admin endpoints.
+
 ## [0.12.0] — 2026-08-21
 
 ### Added
