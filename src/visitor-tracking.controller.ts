@@ -172,11 +172,14 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         if (!requireAdmin(ctx, res)) return;
         const licence = VisitorAnalyticsPlugin.getLicenceStatus();
         const ev = VisitorAnalyticsPlugin.getEvalState();
+        const updater = VisitorAnalyticsPlugin.getUpdateChecker();
         return res.json({
             licensed: !!licence?.valid,
             licenceMessage: licence?.valid ? '' : (licence?.message || 'No licence key configured'),
             tier: licence?.valid ? 'paid' : (ev?.active ? 'trial' : 'free'),
             eval: ev,
+            pkg: PLUGIN_ID_FOR_STORE,
+            update: updater ? updater.getStatus() : null,
         });
     }
 
