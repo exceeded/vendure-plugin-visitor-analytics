@@ -6,7 +6,7 @@ import {
     RateLimiter,
     signValue,
     startRetentionSweeper,
-    verifySignedValue, LicenceStore } from '@huloglobal/vendure-licence-sdk';
+    verifySignedValue, LicenceStore, performSelfUpdate, selfUpdateEnv } from '@huloglobal/vendure-licence-sdk';
 import { Ctx, Permission, RequestContext, TransactionalConnection } from '@vendure/core';
 import { Request, Response } from 'express';
 import { ConversionGoal } from './conversion-goal.entity';
@@ -180,7 +180,22 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
             eval: ev,
             pkg: PLUGIN_ID_FOR_STORE,
             update: updater ? updater.getStatus() : null,
+            selfUpdate: selfUpdateEnv(),
         });
+    }
+
+    /** One-click in-app update (owner-approved feature): installs a
+     *  registry-verified version of THIS plugin via the host's package
+     *  manager and restarts under the process supervisor. Admin-only;
+     *  package name is hard-coded; HULO_SELF_UPDATE=off disables. */
+    @Post('update/run')
+    async updateRun(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (!requireAdmin(ctx, res)) return;
+        const updater = VisitorAnalyticsPlugin.getUpdateChecker();
+        const target = String(body?.version || updater?.getStatus()?.latest || '').trim();
+        if (!target) return res.status(400).json({ ok: false, message: 'No target version known yet — the registry check runs daily; try again shortly.' });
+        const result = await performSelfUpdate({ packageName: '@huloglobal/vendure-plugin-visitor-analytics', targetVersion: target });
+        return res.status(result.ok ? 200 : 400).json(result);
     }
 
     /** Admin-UI licence activation: paste-a-key, verified with the exact

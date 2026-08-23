@@ -93,6 +93,7 @@ interface VisitorProfile {
                     Run <code class="upd-cmd">npm install &#64;huloglobal/vendure-plugin-visitor-analytics&#64;{{ licMeta.update.latest }}</code> and restart, or see the changelog.
                 </div>
                 <div class="lic-actions">
+                    <button class="gbtn gbtn-primary gbtn-sm" *ngIf="licMeta?.selfUpdate?.allowed" (click)="runSelfUpdate()" [disabled]="updating">{{ updating ? updateProgress : 'Update now' }}</button>
                     <button class="gbtn gbtn-outline gbtn-sm" (click)="copyUpdateCmd()">{{ cmdCopied ? 'Copied ✓' : 'Copy command' }}</button>
                     <a href="https://huloglobal.com/vendure-plugins/visitor-analytics/" target="_blank" class="gbtn gbtn-outline gbtn-sm">What&rsquo;s new ↗</a>
                     <button class="gbtn gbtn-outline gbtn-sm" (click)="updateDismissed = true">Dismiss</button>
@@ -1202,6 +1203,59 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     ) {}
 
     licMeta: any = null;
+    updating = false;
+    updateProgress = 'Updating…';
+
+    runSelfUpdate() {
+        const target = this.licMeta?.update?.latest;
+        if (!target || this.updating) return;
+        this.updating = true;
+        this.updateProgress = 'Installing…';
+        this.cdr.markForCheck();
+        this.http.post<any>('/ees/update/run', { version: target }).subscribe({
+            next: r => {
+                if (r?.restartScheduled) {
+                    this.updateProgress = 'Restarting…';
+                    this.notify.success(r.message || 'Updated — server restarting');
+                    this.pollAfterRestart(target);
+                } else {
+                    this.updating = false;
+                    this.notify.success(r?.message || 'Installed — restart the server to load it');
+                }
+                this.cdr.markForCheck();
+            },
+            error: e => {
+                this.updating = false;
+                this.notify.error(e?.error?.message || 'Update failed — nothing was changed');
+                this.cdr.markForCheck();
+            },
+        });
+    }
+
+    private pollAfterRestart(target: string, attempt = 0) {
+        if (attempt > 40) {
+            this.updating = false;
+            this.notify.error('The server has not come back yet — check your process manager');
+            this.cdr.markForCheck();
+            return;
+        }
+        setTimeout(() => {
+            this.http.get<any>('/ees/licence/status').subscribe({
+                next: m => {
+                    const v = m?.version || m?.update?.current;
+                    if (v === target) {
+                        this.updating = false;
+                        this.licMeta = m;
+                        this.notify.success(`Now running v${target}`);
+                        this.cdr.markForCheck();
+                    } else {
+                        this.pollAfterRestart(target, attempt + 1);
+                    }
+                },
+                error: () => this.pollAfterRestart(target, attempt + 1),
+            });
+        }, 3000);
+    }
     licKeyInput = '';
     licActivating = false;
     updateDismissed = false;
