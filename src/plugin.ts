@@ -1,5 +1,5 @@
 import { PluginCommonModule, Type, VendurePlugin, TransactionalConnection } from '@vendure/core';
-import { fingerprintPublicKey, Heartbeat, LicenceStatus, RetentionOptions, RevocationChecker, UpdateChecker, verifyLicence, warnIfIncompatibleVendure, EvaluationClient, EvaluationState, LicenceStore } from '@huloglobal/vendure-licence-sdk';
+import { fingerprintPublicKey, Heartbeat, LicenceStatus, RetentionOptions, RevocationChecker, UpdateChecker, verifyLicence, warnIfIncompatibleVendure, EvaluationClient, EvaluationState, LicenceStore, adapterFor } from '@huloglobal/vendure-licence-sdk';
 import { ConversionGoal } from './conversion-goal.entity';
 import { VisitorEvent } from './visitor-event.entity';
 import { AbandonedCart } from './abandoned-cart.entity';
@@ -187,7 +187,7 @@ export class VisitorAnalyticsPlugin {
     async onApplicationBootstrap() {
         if (VisitorAnalyticsPlugin.licenceStatus?.valid) return;
         try {
-            const store = new LicenceStore((sql, params) => this.connection.rawConnection.query(sql, params));
+            const store = new LicenceStore((sql, params) => adapterFor(this.connection.rawConnection).query(sql, params));
             await store.ensureTable();
             const stored = await store.load(PLUGIN_ID);
             if (stored) {

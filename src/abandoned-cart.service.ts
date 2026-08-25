@@ -3,6 +3,7 @@ import { TransactionalConnection } from '@vendure/core';
 import { createHash, randomBytes } from 'crypto';
 import { AbandonedCart, AbandonedCartStatus } from './abandoned-cart.entity';
 import { getOptions } from './plugin';
+import { adapterFor } from '@huloglobal/vendure-licence-sdk';
 
 const loggerCtx = 'HuloAbandonedCartService';
 
@@ -85,7 +86,7 @@ export class AbandonedCartService {
      */
     async scan(): Promise<{ opened: number; converted: number; slacked: number }> {
         const o = this.opts();
-        const conn = this.connection.rawConnection;
+        const conn = adapterFor(this.connection.rawConnection);
         const cutoff = new Date(Date.now() - o.windowMinutes * 60_000);
         // 1. Auto-mark existing abandoned rows as converted when a
         //    matching checkout_completed lands afterwards.
@@ -100,6 +101,8 @@ export class AbandonedCartService {
                    AND ve.meta LIKE '%"eventType":"checkout_completed"%'
                    AND ve.createdAt > ac.abandonedAt
                )`,
+            undefined,
+            { needAffected: true },
         );
         const convertedCount = Number(converted?.affectedRows ?? converted?.[1] ?? 0);
         // 2. Find candidate sessions.
@@ -304,7 +307,7 @@ export class AbandonedCartService {
     async issueRecoveryLink(cartId: number): Promise<string | null> {
         const o = this.opts();
         if (!o.recoveryLinkSecret) return null;
-        const conn = this.connection.rawConnection;
+        const conn = adapterFor(this.connection.rawConnection);
         const rows: any[] = await conn.query(
             `SELECT sessionId, visitorId FROM abandoned_cart WHERE id = ? LIMIT 1`,
             [cartId],
@@ -332,7 +335,7 @@ export class AbandonedCartService {
         items: any[];
         email: string | null;
     } | null> {
-        const conn = this.connection.rawConnection;
+        const conn = adapterFor(this.connection.rawConnection);
         const rows: any[] = await conn.query(
             `SELECT id, currency, itemsJson, email, recoveryTokenExpiresAt, status
              FROM abandoned_cart WHERE recoveryToken = ? LIMIT 1`,
@@ -354,11 +357,12 @@ export class AbandonedCartService {
     }
 
     async markStatus(cartId: number, status: AbandonedCartStatus): Promise<boolean> {
-        const conn = this.connection.rawConnection;
+        const conn = adapterFor(this.connection.rawConnection);
         const setRecovered = status === 'recovered' ? ', recoveredAt = NOW(3)' : '';
         const res = await conn.query(
             `UPDATE abandoned_cart SET status = ? ${setRecovered} WHERE id = ?`,
             [status, cartId],
+            { needAffected: true },
         );
         return Number(res?.affectedRows ?? 0) > 0;
     }

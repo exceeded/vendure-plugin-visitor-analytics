@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { TransactionalConnection } from '@vendure/core';
+import { adapterFor } from '@huloglobal/vendure-licence-sdk';
 
 /**
  * Zero-schema-cost search analytics: reads back over the existing
@@ -23,7 +24,7 @@ export class SearchAnalyticsService {
         avgResults: number;
     }>> {
         const since = new Date(Date.now() - sinceDays * 86400_000);
-        const rows: any[] = await this.connection.rawConnection.query(
+        const rows: any[] = await adapterFor(this.connection.rawConnection).query(
             `SELECT
                 LOWER(TRIM(BOTH '"' FROM SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"query":"', -1), '"', 1))) AS query,
                 COUNT(*) AS searches,
@@ -52,7 +53,7 @@ export class SearchAnalyticsService {
         searches: number;
     }>> {
         const since = new Date(Date.now() - sinceDays * 86400_000);
-        const rows: any[] = await this.connection.rawConnection.query(
+        const rows: any[] = await adapterFor(this.connection.rawConnection).query(
             `SELECT
                 LOWER(TRIM(BOTH '"' FROM SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"query":"', -1), '"', 1))) AS query,
                 COUNT(*) AS searches
@@ -80,7 +81,7 @@ export class SearchAnalyticsService {
         conversion: number;
     }> {
         const since = new Date(Date.now() - sinceDays * 86400_000);
-        const rows: any[] = await this.connection.rawConnection.query(
+        const rows: any[] = await adapterFor(this.connection.rawConnection).query(
             `SELECT
                 COUNT(DISTINCT ve.sessionId) AS sessionsSearched,
                 COUNT(DISTINCT CASE WHEN adds.sessionId IS NOT NULL THEN ve.sessionId END) AS sessionsAdded

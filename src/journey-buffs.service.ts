@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { TransactionalConnection } from '@vendure/core';
+import { adapterFor } from '@huloglobal/vendure-licence-sdk';
 
 /**
  * Zero-schema-cost enrichment endpoints for the per-visitor Journey
@@ -26,7 +27,7 @@ export class JourneyBuffsService {
         uniqueVisitors: number;
     }>> {
         const since = new Date(Date.now() - sinceDays * 86400_000);
-        const rows: any[] = await this.connection.rawConnection.query(
+        const rows: any[] = await adapterFor(this.connection.rawConnection).query(
             `SELECT
                 url,
                 COUNT(*) AS rageClicks,
@@ -60,7 +61,7 @@ export class JourneyBuffsService {
         uniqueVisitors: number;
     }>> {
         const since = new Date(Date.now() - sinceDays * 86400_000);
-        const rows: any[] = await this.connection.rawConnection.query(
+        const rows: any[] = await adapterFor(this.connection.rawConnection).query(
             `SELECT
                 url,
                 COUNT(*) AS deadClicks,
@@ -98,7 +99,7 @@ export class JourneyBuffsService {
         rageClicked: boolean;
         intent: 'browse' | 'consider' | 'purchase' | 'abandon' | 'frustrate' | 'bounce';
     }>> {
-        const rows: any[] = await this.connection.rawConnection.query(
+        const rows: any[] = await adapterFor(this.connection.rawConnection).query(
             `SELECT
                 sessionId,
                 MIN(createdAt) AS startedAt,

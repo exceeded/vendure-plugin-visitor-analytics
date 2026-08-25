@@ -11,6 +11,7 @@ import { Injectable } from '@nestjs/common';
 import { Args, Query, Resolver } from '@nestjs/graphql';
 import { gql } from 'graphql-tag';
 import { Allow, Ctx, Permission, RequestContext, TransactionalConnection } from '@vendure/core';
+import { adapterFor } from '@huloglobal/vendure-licence-sdk';
 
 export const visitorAnalyticsAdminApiSchema = gql`
     type HuloVisitorSummary {
@@ -106,7 +107,7 @@ export class VisitorAnalyticsAdminResolver {
     ): Promise<any> {
         const days = clampDays(daysInput);
         const c = channelFilter(channelId);
-        const totals = await this.connection.rawConnection.query(
+        const totals = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(DISTINCT visitorId) AS visitors,
                     COUNT(DISTINCT sessionId) AS sessions,
                     SUM(type = 'pageview') AS pageViews,
@@ -116,7 +117,7 @@ export class VisitorAnalyticsAdminResolver {
             [days, ...c.params],
         );
         const t = (totals as any[])[0] || {};
-        const sessionRows = await this.connection.rawConnection.query(
+        const sessionRows = await adapterFor(this.connection.rawConnection).query(
             `SELECT sessionId,
                     TIMESTAMPDIFF(SECOND, MIN(createdAt), MAX(createdAt)) AS dur,
                     COUNT(*) AS n
@@ -144,7 +145,7 @@ export class VisitorAnalyticsAdminResolver {
     async huloVisitorSources(@Args('channelId') channelId?: number, @Args('days') daysInput?: number): Promise<any[]> {
         const days = clampDays(daysInput);
         const c = channelFilter(channelId);
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT COALESCE(NULLIF(referrerDomain, ''), '(direct)') AS source,
                     COUNT(DISTINCT visitorId) AS visitors,
                     COUNT(DISTINCT sessionId) AS sessions
@@ -165,7 +166,7 @@ export class VisitorAnalyticsAdminResolver {
     async huloVisitorTopPages(@Args('channelId') channelId?: number, @Args('days') daysInput?: number): Promise<any[]> {
         const days = clampDays(daysInput);
         const c = channelFilter(channelId);
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT url,
                     MAX(title) AS title,
                     COUNT(*) AS views,
@@ -200,7 +201,7 @@ export class VisitorAnalyticsAdminResolver {
         let prevUsers: number | null = null;
         for (let i = 0; i < steps.length; i++) {
             const pattern = steps[i];
-            const rows = await this.connection.rawConnection.query(
+            const rows = await adapterFor(this.connection.rawConnection).query(
                 `SELECT COUNT(DISTINCT visitorId) AS n
                  FROM visitor_event
                  WHERE type = 'pageview'
@@ -220,7 +221,7 @@ export class VisitorAnalyticsAdminResolver {
     @Allow(Permission.ReadCustomer)
     async huloVisitorJourney(@Args('visitorId') visitorId: string): Promise<any[]> {
         if (!visitorId) return [];
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT id, createdAt, type, url, title, referrerDomain,
                     country, region, city, browser, os, device,
                     sessionId, visitorId, customerId

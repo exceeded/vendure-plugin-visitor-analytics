@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { TransactionalConnection } from '@vendure/core';
+import { adapterFor } from '@huloglobal/vendure-licence-sdk';
 
 const loggerCtx = 'HuloRecommendationsService';
 
@@ -55,7 +56,7 @@ export class RecommendationsService {
      * bot session can't skew the table.
      */
     async aggregateCoViews(sinceHours = 24): Promise<{ pairs: number }> {
-        const conn = this.connection.rawConnection;
+        const conn = adapterFor(this.connection.rawConnection);
         const since = new Date(Date.now() - sinceHours * 3600_000);
         // Extract every session's product-view sequence within the
         // window. Bounded to 20 events per session to keep pathological
@@ -102,6 +103,7 @@ export class RecommendationsService {
                            viewsTogether = viewsTogether + 1,
                            lastUpdated = NOW(3)`,
                         [a, b, s.channelId || 1],
+                        { conflictColumns: ['productIdA', 'productIdB', 'channelId'] },
                     );
                     pairs += 1;
                 }
@@ -116,7 +118,7 @@ export class RecommendationsService {
      * product, ordered by co-view score, capped at `limit`.
      */
     async alsoViewed(productId: number, channelId = 1, limit = 10): Promise<RecommendedProduct[]> {
-        const rows: any[] = await this.connection.rawConnection.query(
+        const rows: any[] = await adapterFor(this.connection.rawConnection).query(
             `SELECT productIdB AS productId, viewsTogether AS score
              FROM product_co_view
              WHERE productIdA = ? AND channelId = ?
@@ -138,7 +140,7 @@ export class RecommendationsService {
      * themselves).
      */
     async personalRecommendations(visitorId: string, channelId = 1, limit = 10): Promise<RecommendedProduct[]> {
-        const conn = this.connection.rawConnection;
+        const conn = adapterFor(this.connection.rawConnection);
         const seeds: any[] = await conn.query(
             `SELECT DISTINCT
                 CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"productId":', -1), ',', 1) AS UNSIGNED) AS productId
@@ -179,7 +181,7 @@ export class RecommendationsService {
      */
     async trending(channelId = 1, sinceHours = 24, limit = 10): Promise<RecommendedProduct[]> {
         const since = new Date(Date.now() - sinceHours * 3600_000);
-        const rows: any[] = await this.connection.rawConnection.query(
+        const rows: any[] = await adapterFor(this.connection.rawConnection).query(
             `SELECT
                 CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"productId":', -1), ',', 1) AS UNSIGNED) AS productId,
                 COUNT(*) AS views
@@ -224,7 +226,7 @@ export class RecommendationsService {
             // languageCode = 'en' DESC so English wins the tie for
             // multi-locale stores; single-locale installs will
             // naturally land on their only translation.
-            const rows: any[] = await this.connection.rawConnection.query(
+            const rows: any[] = await adapterFor(this.connection.rawConnection).query(
                 `SELECT pt.baseId AS productId, pt.name, pt.slug
                  FROM product_translation pt
                  JOIN product p ON p.id = pt.baseId AND p.deletedAt IS NULL

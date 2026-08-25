@@ -6,7 +6,7 @@ import {
     RateLimiter,
     signValue,
     startRetentionSweeper,
-    verifySignedValue, LicenceStore, performSelfUpdate, selfUpdateEnv } from '@huloglobal/vendure-licence-sdk';
+    verifySignedValue, LicenceStore, performSelfUpdate, selfUpdateEnv, adapterFor } from '@huloglobal/vendure-licence-sdk';
 import { Ctx, Permission, RequestContext, TransactionalConnection } from '@vendure/core';
 import { Request, Response } from 'express';
 import { ConversionGoal } from './conversion-goal.entity';
@@ -121,7 +121,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         this.limiter = new RateLimiter({ capacity: rl.capacity, windowMs: rl.windowMs });
         if (opts.retention) {
             this.stopRetention = startRetentionSweeper({
-                getConnection: () => this.connection.rawConnection,
+                getConnection: () => adapterFor(this.connection.rawConnection),
                 table: 'visitor_event',
                 options: opts.retention,
                 label: 'visitor-analytics',
@@ -164,7 +164,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
      * on the first request and refreshed on every subsequent one.
      */
 
-    private licenceStore = new LicenceStore((sql: string, params?: any[]) => this.connection.rawConnection.query(sql, params));
+    private licenceStore = new LicenceStore((sql: string, params?: any[]) => adapterFor(this.connection.rawConnection).query(sql, params));
 
     /** Licence/evaluation state for the admin banner. */
     @Get('licence/status')
@@ -345,7 +345,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const days = Math.min(Math.max(parseInt(String((req.query as any).days || '30'), 10) || 30, 1), 365);
         const channelId = parseChannelId((req.query as any).channelId);
         const w = channelWhere(channelId);
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT DATE(createdAt) AS day,
                     COUNT(DISTINCT visitorId) AS visitors,
                     COUNT(DISTINCT sessionId) AS sessions,
@@ -357,7 +357,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
              ORDER BY day`,
             [days, ...w.params],
         );
-        const [{ totalVisitors, totalSessions, totalPageviews, avgTimeMs }] = await this.connection.rawConnection.query(
+        const [{ totalVisitors, totalSessions, totalPageviews, avgTimeMs }] = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(DISTINCT visitorId) AS totalVisitors,
                     COUNT(DISTINCT sessionId) AS totalSessions,
                     SUM(type='pageview')      AS totalPageviews,
@@ -368,7 +368,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         );
         // Previous period of identical length, immediately prior —
         // powers the KPI delta chips ("+12% vs previous 30 days").
-        const [prev] = await this.connection.rawConnection.query(
+        const [prev] = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(DISTINCT visitorId) AS totalVisitors,
                     COUNT(DISTINCT sessionId) AS totalSessions,
                     SUM(type='pageview')      AS totalPageviews,
@@ -414,7 +414,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const channelId = parseChannelId((req.query as any).channelId);
         const w = channelWhere(channelId);
 
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT source, medium, COALESCE(MAX(campaign), '') AS campaign,
                     COUNT(DISTINCT visitorId) AS visitors,
                     COUNT(DISTINCT sessionId) AS sessions,
@@ -439,7 +439,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
              LIMIT ? OFFSET ?`,
             [days, ...w.params, take, skip],
         );
-        const [{ total }] = await this.connection.rawConnection.query(
+        const [{ total }] = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(*) AS total FROM (
                 SELECT DISTINCT
                     COALESCE(utmSource, referrerDomain, '(direct)') AS source,
@@ -472,7 +472,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const skip = clampInt((req.query as any).skip, 0, 0, 1_000_000);
         const channelId = parseChannelId((req.query as any).channelId);
         const w = channelWhere(channelId);
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT url,
                     MAX(title)               AS title,
                     COUNT(*)                 AS views,
@@ -486,7 +486,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
              LIMIT ? OFFSET ?`,
             [days, ...w.params, take, skip],
         );
-        const [{ total }] = await this.connection.rawConnection.query(
+        const [{ total }] = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(DISTINCT url) AS total FROM visitor_event
              WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
                    AND type IN ('pageview', 'unload')`,
@@ -518,7 +518,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         ];
         const result: any[] = [];
         for (const s of stages) {
-            const [{ n }] = await this.connection.rawConnection.query(
+            const [{ n }] = await adapterFor(this.connection.rawConnection).query(
                 `SELECT COUNT(DISTINCT visitorId) AS n FROM visitor_event
                  WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
                    AND type='pageview' AND (${s.where})`,
@@ -539,7 +539,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const skip = clampInt((req.query as any).skip, 0, 0, 1_000_000);
         const channelId = parseChannelId((req.query as any).channelId);
         const w = channelWhere(channelId);
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT url,
                     MAX(title) AS title,
                     COUNT(*)   AS exits
@@ -556,7 +556,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
              LIMIT ? OFFSET ?`,
             [days, ...w.params, take, skip],
         );
-        const [{ total }] = await this.connection.rawConnection.query(
+        const [{ total }] = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(DISTINCT url) AS total FROM (
                 SELECT sessionId, url,
                        ROW_NUMBER() OVER (PARTITION BY sessionId ORDER BY createdAt DESC) AS rn
@@ -585,7 +585,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const skip = clampInt((req.query as any).skip, 0, 0, 1_000_000);
         const channelId = parseChannelId((req.query as any).channelId);
         const w = channelWhere(channelId);
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT type,
                     COUNT(*) AS count,
                     COUNT(DISTINCT visitorId) AS uniqueVisitors,
@@ -598,7 +598,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
              LIMIT ? OFFSET ?`,
             [days, ...w.params, take, skip],
         );
-        const [{ total }] = await this.connection.rawConnection.query(
+        const [{ total }] = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(DISTINCT type) AS total FROM visitor_event
              WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
                    AND type NOT IN ('pageview', 'unload')`,
@@ -637,7 +637,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
     @Get('visitors/channels')
     async channelList(@Ctx() ctx: RequestContext, @Res() res: Response) {
         if (!requireAdmin(ctx, res)) return;
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT id, code, token FROM channel ORDER BY id ASC LIMIT 200`,
         );
         return res.json({
@@ -658,7 +658,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const days = clampInt((req.query as any).days, 30, 1, 365);
         const channelId = parseChannelId((req.query as any).channelId);
         const w = channelWhere(channelId);
-        const grouped = (col: string) => this.connection.rawConnection.query(
+        const grouped = (col: string) => adapterFor(this.connection.rawConnection).query(
             `SELECT ${col} AS label, COUNT(DISTINCT visitorId) AS visitors
              FROM visitor_event
              WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
@@ -699,7 +699,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
 
         const tick = async () => {
             try {
-                const rows = await this.connection.rawConnection.query(
+                const rows = await adapterFor(this.connection.rawConnection).query(
                     `SELECT visitorId,
                             MAX(url) AS url,
                             MAX(country) AS country,
@@ -758,7 +758,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const skip = clampInt((req.query as any).skip, 0, 0, 1_000_000);
         const channelId = parseChannelId((req.query as any).channelId);
         const w = channelWhere(channelId);
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT visitorId,
                     MAX(customerId)            AS customerId,
                     MIN(createdAt)             AS firstSeenAt,
@@ -777,7 +777,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
              LIMIT ? OFFSET ?`,
             [days, ...w.params, take, skip],
         );
-        const [{ total }] = await this.connection.rawConnection.query(
+        const [{ total }] = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(DISTINCT visitorId) AS total
              FROM visitor_event WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
                    `,
@@ -811,7 +811,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const visitorId = String(visitorIdRaw).slice(0, 64);
 
         // One row with the latest non-null value of every column.
-        const [latest] = await this.connection.rawConnection.query(
+        const [latest] = await adapterFor(this.connection.rawConnection).query(
             `SELECT visitorId,
                     MAX(customerId)         AS customerId,
                     MIN(createdAt)          AS firstSeenAt,
@@ -842,7 +842,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         );
         if (!latest) return res.status(404).json({ error: 'visitor not found' });
 
-        const sessions = await this.connection.rawConnection.query(
+        const sessions = await adapterFor(this.connection.rawConnection).query(
             `SELECT sessionId,
                     MIN(createdAt) AS startedAt,
                     MAX(createdAt) AS endedAt,
@@ -860,7 +860,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
 
         let customer: any = null;
         if (latest.customerId) {
-            const [c] = await this.connection.rawConnection.query(
+            const [c] = await adapterFor(this.connection.rawConnection).query(
                 `SELECT id, firstName, lastName, emailAddress
                  FROM customer WHERE id = ? LIMIT 1`,
                 [Number(latest.customerId)],
@@ -1035,7 +1035,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         if (!requireAdmin(ctx, res)) return;
         const days = Math.min(Math.max(parseInt(String((req.query as any).days || '30'), 10) || 30, 1), 365);
         const channelId = parseInt(String((req.query as any).channelId || '1'), 10) || 1;
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT g.id, g.name, g.urlPattern, g.valueMinor, g.enabled,
                     COUNT(DISTINCT v.visitorId) AS uniqueVisitors,
                     COUNT(*) AS completions
@@ -1064,7 +1064,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const days = Math.min(Math.max(parseInt(String((req.query as any).days || '7'), 10) || 7, 1), 90);
         const channelId = parseChannelId((req.query as any).channelId);
         const w = channelWhere(channelId);
-        const rows = await this.connection.rawConnection.query(
+        const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT createdAt, visitorId, sessionId, customerId, channelId,
                     type, url, title, referrerDomain,
                     country, region, city, browser, os, device,
