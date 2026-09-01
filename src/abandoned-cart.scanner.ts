@@ -40,18 +40,32 @@ export class AbandonedCartScanner implements OnApplicationBootstrap, OnApplicati
         // than throwing — a mono-process dev setup still works.
         if (!this.processContext.isWorker) return;
 
+        // Abandoned-cart detection (and its Slack notifications) and the
+        // recommendations aggregation are premium features: checked every
+        // tick — not once at boot — so activating a licence (or the eval
+        // window opening) enables them without a restart, and an expired
+        // evaluation stops them at the next tick.
+        const premium = () => {
+            // Lazy import avoids a static plugin<->scanner cycle at load time.
+            const { VisitorAnalyticsPlugin } = require('./plugin');
+            return VisitorAnalyticsPlugin.hasPremiumAccess();
+        };
         this.cartTimer = setInterval(() => {
+            if (!premium()) return;
             this.cartSvc.scan().catch((e: any) => {
                 Logger.error(`Abandoned-cart scan failed: ${e?.message}`, loggerCtx);
             });
         }, 5 * 60_000);
         // Fire once at boot so a fresh install doesn't wait 5 min for
         // its first sweep.
-        this.cartSvc.scan().catch((e: any) => {
-            Logger.error(`Initial abandoned-cart scan failed: ${e?.message}`, loggerCtx);
-        });
+        if (premium()) {
+            this.cartSvc.scan().catch((e: any) => {
+                Logger.error(`Initial abandoned-cart scan failed: ${e?.message}`, loggerCtx);
+            });
+        }
 
         this.recsTimer = setInterval(() => {
+            if (!premium()) return;
             this.recsSvc.aggregateCoViews(6).catch((e: any) => {
                 Logger.error(`Co-view aggregation failed: ${e?.message}`, loggerCtx);
             });

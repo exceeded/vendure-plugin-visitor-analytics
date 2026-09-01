@@ -5,6 +5,15 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.1] — 2026-09-01
+
+### Fixed
+- **Premium background jobs now respect the tier.** The abandoned-cart
+  sweep (with its Slack notifications) and the recommendations co-view
+  aggregation kept running after the evaluation ended; both now check
+  premium access on every tick — and re-enable instantly when a licence
+  is activated, no restart needed. Admin endpoints were already gated.
+
 ## [0.15.0] — 2026-08-25
 
 ### Added
