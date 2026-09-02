@@ -5,6 +5,11 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.3] — 2026-09-02
+
+### Changed
+- **README.** Licensing paragraph now describes the 14-day fully-featured evaluation (the plugin already behaved this way); pricing unchanged at £9.95/month or £199 lifetime.
+
 ## [0.15.2] — 2026-09-02
 
 ### Changed

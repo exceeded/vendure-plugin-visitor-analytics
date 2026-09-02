@@ -19,7 +19,7 @@ Maintained by Wayne Garrison.
 
 ## Buy
 
-7-day free trial then **£9.95/month**, or **£199 one-off lifetime** at
+14-day fully-featured evaluation, then **£9.95/month** (7 days free on the monthly plan), or **£199 one-off lifetime** at
 [elite.charity/licence/buy/vendure-plugin-visitor-analytics](https://elite.charity/licence/buy/vendure-plugin-visitor-analytics).
 
 ## Install
