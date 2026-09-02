@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, OnApplicationBootstrap, OnModuleDestroy, Param, Post, Put, Req, Res } from '@nestjs/common';
+import { Body, Controller, Delete, Get, OnApplicationBootstrap, OnModuleDestroy, Param, Post, Put, Req, Res, Query } from '@nestjs/common';
 import {
     applySecurityHeaders,
     isLicensed,
@@ -6,7 +6,7 @@ import {
     RateLimiter,
     signValue,
     startRetentionSweeper,
-    verifySignedValue, LicenceStore, performSelfUpdate, selfUpdateEnv, adapterFor } from '@huloglobal/vendure-licence-sdk';
+    verifySignedValue, LicenceStore, performSelfUpdate, selfUpdateEnv, adapterFor, PurchaseClaimClient } from '@huloglobal/vendure-licence-sdk';
 import { Ctx, Permission, RequestContext, TransactionalConnection } from '@vendure/core';
 import { Request, Response } from 'express';
 import { ConversionGoal } from './conversion-goal.entity';
@@ -116,6 +116,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
     ) {}
 
     onApplicationBootstrap(): void {
+        void this.purchaseClaimClient().resume();
         const opts = getOptions();
         const rl = opts.rateLimit || { capacity: 240, windowMs: 60_000 };
         this.limiter = new RateLimiter({ capacity: rl.capacity, windowMs: rl.windowMs });
@@ -219,6 +220,52 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         await this.licenceStore.clear(PLUGIN_ID_FOR_STORE);
         VisitorAnalyticsPlugin.deactivateRuntimeLicence();
         return res.json({ licensed: false });
+    }
+    /** Buy-from-admin: mint a claim token and return the HULO buy-page
+     *  URL. Once checkout completes the licence server binds the claim to
+     *  the minted key and `licence/claim-status` installs it — no email
+     *  round-trip, no .env edit, no restart. */
+    @Post('licence/purchase-link')
+    async licencePurchaseLink(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (!requireAdmin(ctx, res)) return;
+        const plan = (['monthly', 'annual', 'lifetime'].includes(String(body?.plan)) ? String(body.plan) : 'annual') as 'monthly' | 'annual' | 'lifetime';
+        try {
+            const r = await this.purchaseClaimClient().createPurchaseLink(plan, String(body?.email || '').trim() || undefined);
+            return res.json({ url: r.url, state: 'pending' });
+        } catch (e: any) {
+            return res.status(500).json({ message: e?.message || 'Could not start the purchase — try again shortly.' });
+        }
+    }
+
+    /** Poll target for the admin page while a purchase is pending; with
+     *  `?check=1` it asks the licence server right now and installs the
+     *  key if it is ready. Installed claims are re-checked daily so a
+     *  renewed subscription key lands automatically too. */
+    @Get('licence/claim-status')
+    async licenceClaimStatus(@Ctx() ctx: RequestContext, @Res() res: Response, @Query('check') check?: string) {
+        if (!requireAdmin(ctx, res)) return;
+        const client = this.purchaseClaimClient();
+        const st = check ? await client.checkNow() : await client.status();
+        return res.json({ ...st, licensed: !!VisitorAnalyticsPlugin.getLicenceStatus()?.valid });
+    }
+
+    /** Buy-from-admin auto-install client. */
+    private purchaseClaim: PurchaseClaimClient | null = null;
+    private purchaseClaimClient(): PurchaseClaimClient {
+        if (!this.purchaseClaim) {
+            this.purchaseClaim = new PurchaseClaimClient({
+                packageName: VisitorAnalyticsPlugin.getPackageName(),
+                instanceId: () => VisitorAnalyticsPlugin.getEvalInstanceId(),
+                query: (sql, params, opts) => adapterFor(this.connection.rawConnection).query(sql, params, opts),
+                onLicence: async (key: string) => {
+                    const status = VisitorAnalyticsPlugin.activateRuntimeLicence(key);
+                    if (!status.valid) return false;
+                    await this.licenceStore.ensureTable(); await this.licenceStore.save(PLUGIN_ID_FOR_STORE, key);
+                    return true;
+                },
+            });
+        }
+        return this.purchaseClaim;
     }
 
     @Post('track')

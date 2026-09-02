@@ -117,7 +117,10 @@ interface VisitorProfile {
                 <div class="lic-actions">
                     <input class="lic-key" type="text" placeholder="Paste licence key (eyJhbGciOi…)" [(ngModel)]="licKeyInput" [disabled]="licActivating">
                     <button class="gbtn gbtn-primary gbtn-sm" (click)="activateLicence()" [disabled]="licActivating || !licKeyInput">{{ licActivating ? 'Verifying…' : 'Activate' }}</button>
-                    <a href="https://huloglobal.com/vendure-plugins/visitor-analytics/" target="_blank" class="gbtn gbtn-outline gbtn-sm">Get a licence ↗</a>
+                    <select [(ngModel)]="buyPlan" [disabled]="buying" style="padding:5px 9px;border:1px solid #d1d5db;border-radius:7px;font-size:12.5px;background:#fff;color:inherit"><option value="monthly">Monthly</option><option value="annual">Annual (2 months free)</option><option value="lifetime">Lifetime</option></select>
+                    <button class="gbtn gbtn-primary gbtn-sm" (click)="buyLicence()" [disabled]="buying">{{ buying ? 'Opening checkout…' : 'Buy licence →' }}</button>
+                    <span *ngIf="claim?.state === 'pending'" style="font-size:12.5px;font-weight:600">⏳ Waiting for checkout to finish — the licence installs itself. <a (click)="checkClaim(true)" style="cursor:pointer;text-decoration:underline">Check now</a></span>
+                    <a href="https://huloglobal.com/vendure-plugins/visitor-analytics/" target="_blank" class="gbtn gbtn-outline gbtn-sm">Details ↗</a>
                 </div>
             </div>
         </vdr-page-block>
@@ -1277,6 +1280,47 @@ export class VisitorsComponent implements OnInit, OnDestroy {
         });
     }
 
+    // Buy-from-admin: opens HULO checkout in a new tab; the licence server
+    // binds the purchase to this install and the key installs itself.
+    buyPlan: 'monthly' | 'annual' | 'lifetime' = 'annual';
+    buying = false;
+    claim: any = null;
+    private claimTimer: any = null;
+    buyLicence() {
+        this.buying = true;
+        this.http.post<any>('/ees/licence/purchase-link', { plan: this.buyPlan }).subscribe({
+            next: r => {
+                this.buying = false;
+                if (r?.url) {
+                    window.open(r.url, '_blank', 'noopener');
+                    this.claim = { state: 'pending' };
+                    this.startClaimPoll();
+                }
+                this.cdr.markForCheck();
+            },
+            error: e => { this.buying = false; this.notify.error(e?.error?.message || 'Could not start checkout — try again shortly'); this.cdr.markForCheck(); },
+        });
+    }
+    checkClaim(force = false) {
+        this.http.get<any>('/ees/licence/claim-status' + (force ? '?check=1' : '')).subscribe({
+            next: r => {
+                const wasPending = this.claim?.state === 'pending';
+                this.claim = r;
+                if (r?.state === 'pending') { if (!this.claimTimer) this.startClaimPoll(); }
+                else this.stopClaimPoll();
+                if (r?.licensed && (wasPending || r?.state === 'installed') && !this.licMeta?.licensed) {
+                    this.notify.success('Licence installed — all features enabled');
+                    this.http.get<any>('/ees/licence/status').subscribe({ next: m => { this.licMeta = m; this.cdr.markForCheck(); }, error: () => undefined });
+                }
+                this.cdr.markForCheck();
+            },
+            error: () => undefined,
+        });
+    }
+    private startClaimPoll() { this.stopClaimPoll(); this.claimTimer = setInterval(() => this.checkClaim(false), 15000); }
+    private stopClaimPoll() { if (this.claimTimer) { clearInterval(this.claimTimer); this.claimTimer = null; } }
+
+
     activateLicence() {
         const key = (this.licKeyInput || '').trim();
         if (!key) return;
@@ -1298,6 +1342,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     }
 
     ngOnInit() {
+        this.checkClaim(false);
         this.loadLicMeta();
         this.restorePrefs();
         this.loadChannels();
@@ -1328,6 +1373,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     }
 
     ngOnDestroy() {
+        this.stopClaimPoll();
         this.disconnectLive();
     }
 
