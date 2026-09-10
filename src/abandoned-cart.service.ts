@@ -54,6 +54,11 @@ export interface AbandonmentOptions {
     /** Storefront base URL — where the recovery link lands. Something
      *  like `https://shop.example.com`. Default: publicBaseUrl. */
     storefrontBaseUrl?: string;
+    /** Per-channel storefront base URLs, keyed by channel code, for
+     *  multi-storefront installs — a cart abandoned on channel
+     *  `licensedock` gets a link to that storefront. Falls back to
+     *  `storefrontBaseUrl` for channels not listed. */
+    storefrontBaseUrls?: Record<string, string>;
 }
 
 @Injectable()
@@ -69,6 +74,7 @@ export class AbandonedCartService {
             recoveryLinkSecret: raw?.recoveryLinkSecret ?? '',
             recoveryLinkTtlHours: raw?.recoveryLinkTtlHours ?? 72,
             storefrontBaseUrl: raw?.storefrontBaseUrl ?? getOptions().publicBaseUrl,
+            storefrontBaseUrls: raw?.storefrontBaseUrls ?? {},
         };
     }
 
@@ -309,7 +315,9 @@ export class AbandonedCartService {
         if (!o.recoveryLinkSecret) return null;
         const conn = adapterFor(this.connection.rawConnection);
         const rows: any[] = await conn.query(
-            `SELECT sessionId, visitorId FROM abandoned_cart WHERE id = ? LIMIT 1`,
+            `SELECT ac.sessionId, ac.visitorId, ac.channelId, ch.code AS channelCode
+             FROM abandoned_cart ac LEFT JOIN channel ch ON ch.id = ac.channelId
+             WHERE ac.id = ? LIMIT 1`,
             [cartId],
         );
         if (!rows?.length) return null;
@@ -319,8 +327,15 @@ export class AbandonedCartService {
             `UPDATE abandoned_cart SET recoveryToken = ?, recoveryTokenExpiresAt = ? WHERE id = ?`,
             [token, expiresAt, cartId],
         );
-        const base = (o.storefrontBaseUrl || '').replace(/\/$/, '');
-        return `${base}/cart/restore?t=${token}`;
+        return `${this.storefrontBaseFor(rows[0].channelCode)}/cart/restore?t=${token}`;
+    }
+
+    /** Storefront origin for a channel: the per-channel map first, then
+     *  the single storefrontBaseUrl. Trailing slashes are dropped. */
+    storefrontBaseFor(channelCode?: string | null): string {
+        const o = this.opts();
+        const perChannel = channelCode ? o.storefrontBaseUrls?.[channelCode] : undefined;
+        return String(perChannel || o.storefrontBaseUrl || '').replace(/\/$/, '');
     }
 
     /**

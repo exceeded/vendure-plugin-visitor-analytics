@@ -131,8 +131,10 @@ needs a route that:
 1. Reads `?t=` from the URL
 2. Calls `GET /ees/recover-cart?t=<token>` to fetch `{ items: [...] }`
 3. Re-adds each `{ variantId, qty }` via your Vendure order API (usually
-   `addItemToOrder(productVariantId, quantity)`)
-4. Navigates to `/cart` when done
+   `addItemToOrder(productVariantId, quantity)`) — check the result is an
+   `Order`, not an `ErrorResult` (out of stock, purchase limit…)
+4. Shows the basket when done — open your cart drawer or navigate to your
+   cart page, whichever your storefront has (don't assume a `/cart` route)
 
 Guard against silently overwriting a live cart — if the visitor
 already has items, show a "you already have items in your cart"
@@ -231,6 +233,12 @@ token and returns `{ ok: true, url: '<storefront>/cart/restore?t=...' }`.
 The token is time-bounded (`recoveryLinkTtlHours`, default 72) and
 non-reusable. The storefront exchanges it via
 `GET /ees/recover-cart?t=<token>` to get back the persisted item list.
+
+Multi-storefront installs: set `abandonment.storefrontBaseUrls` to a map of
+channel code → storefront origin (for example
+`{ licensedock: 'https://license-dock.com' }`) and each cart's link points
+at the storefront it was abandoned on; channels not listed fall back to
+`storefrontBaseUrl`.
 
 Set `abandonment.recoveryLinkSecret` in plugin options to enable this —
 without it, the endpoint returns `{ error: 'recovery-disabled-or-not-found' }`.

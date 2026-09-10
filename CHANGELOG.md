@@ -5,6 +5,14 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.2] — 2026-09-10
+
+### Added
+- **Per-channel recovery links.** `abandonment.storefrontBaseUrls` (channel code → storefront origin) makes a cart abandoned on a second storefront link back to that storefront; unlisted channels use `storefrontBaseUrl` as before.
+
+### Fixed
+- README: the storefront restore route must show the basket the way the storefront does (drawer or page) rather than assume a `/cart` route, and must treat an `ErrorResult` from `addItemToOrder` as a failed line. The reference storefront implementation now does both.
+
 ## [0.17.1] — 2026-09-02
 
 ### Changed
