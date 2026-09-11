@@ -5,6 +5,10 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.1] — 2026-09-11
+
+_Same content as 0.18.0, whose publish was left staged on the npm registry and never promoted; 0.18.1 is the first installable release of this line._
+
 ## [0.18.0] — 2026-09-11
 
 ### Added
