@@ -104,6 +104,36 @@ export class AbandonedCart {
     @Column({ type: 'int', nullable: true })
     recoveryOrderId!: number | null;
 
+    // ── Recovery attribution (0.18.0) ───────────────────────────────
+    // Every column is nullable and is also added at boot with
+    // `ADD COLUMN IF NOT EXISTS`, so installs that don't run TypeORM
+    // migrations for plugins still get them.
+
+    /** Order code the recovery link was bound to when issued
+     *  (`issueRecoveryLink(id, { resumeOrderCode })`). The storefront
+     *  can offer to resume that exact order while it is still in
+     *  `AddingItems` / `ArrangingPayment`. */
+    @Column({ type: 'varchar', length: 32, nullable: true })
+    resumeOrderCode!: string | null;
+
+    /** How far the recovery link got: `link_issued` → `link_opened` →
+     *  `resumed` → `converted`. Monotonic. NULL when no link was ever
+     *  minted for the cart. */
+    @Column({ type: 'varchar', length: 16, nullable: true })
+    recoveryStep!: string | null;
+
+    /** When the cart turned into an order — set by the scanner (a
+     *  `checkout_completed` event in the same session) or by the
+     *  token-bound `POST /ees/recover-cart/converted` call. */
+    @Column({ type: 'datetime', precision: 3, nullable: true })
+    convertedAt!: Date | null;
+
+    @Column({ type: 'int', nullable: true })
+    convertedOrderId!: number | null;
+
+    @Column({ type: 'varchar', length: 32, nullable: true })
+    convertedOrderCode!: string | null;
+
     @Column({ type: 'varchar', length: 2048, nullable: true })
     lastKnownUrl!: string | null;
 

@@ -5,6 +5,19 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] — 2026-09-11
+
+### Added
+- **Recovery links can resume an order.** `issueRecoveryLink(cartId, { resumeOrderCode })` (and `POST /ees/abandoned-carts/:id/recovery-link` with the same body) binds the link to the visitor's open Vendure order. `GET /ees/recover-cart` now returns `orderCode`, `orderState` and `resumable`, and the new public `POST /ees/recover-cart/resume?t=…` adds `resumeOrderCode` — set only while that order is still `AddingItems` / `ArrangingPayment`. Storefronts keep re-adding `items` as the universal fallback.
+- **Attribution.** New `abandoned_cart` columns `recoveryStep` (`link_issued` → `link_opened` → `resumed` → `converted`, monotonic), `convertedAt`, `convertedOrderId`, `convertedOrderCode` and `resumeOrderCode`. The storefront reports a recovered checkout with the token-bound public `POST /ees/recover-cart/converted { t, orderCode }`; the scanner's own `checkout_completed` match sets `convertedAt` too. `GET /ees/abandoned-carts/summary` gains an `attribution` block (link issued / opened / resumed / converted counts, value recovered via link, opt-outs) and the list endpoint returns the new columns.
+- **Email opt-out.** New `abandoned_cart_opt_out` table. `GET|POST /ees/abandoned-carts/opt-out?e=<token>` (public; POST is the RFC 8058 one-click form) records an opt-out for the address in the HMAC token. Service API: `isOptedOut(email)` (fails closed), `optOut`, `optIn`, `listOptOuts`, `buildOptOutLink(email)` and `buildListUnsubscribeHeaders(email)` for the `List-Unsubscribe` / `List-Unsubscribe-Post` headers. Admin: `GET /ees/abandoned-carts/opt-outs`, `POST /ees/abandoned-carts/opt-outs/remove { email }`; the detail endpoint reports `optedOut`. New option `abandonment.optOutSecret` (defaults to `recoveryLinkSecret`, then `signingSecret`).
+- **Storefront helper.** `hulo.resumeCart(token)` and `hulo.recoveryConverted(orderCode)` — the helper remembers the token from `restoreCart` / `resumeCart` in `sessionStorage`, so the thank-you page needs one call.
+- Pure helpers exported for hosts: `isResumableOrderState`, `advanceRecoveryStep`, `normaliseEmail`, `hashEmail`, `buildOptOutToken`, `verifyOptOutToken`, `buildOptOutUrl`, `buildListUnsubscribeHeaders`.
+
+### Changed
+- The public recovery endpoints are rate-limited per client IP (`recover-cart` and `resume` 30/min, `converted` and `opt-out` 10/min) and answer with `Cache-Control: no-store`.
+- The new columns and the opt-out table are created at boot with `ADD COLUMN IF NOT EXISTS` / `CREATE TABLE IF NOT EXISTS` (MariaDB and PostgreSQL), so installs that do not run TypeORM migrations for plugins need no manual step. Installs that do can generate a migration as usual — the entity declares the same columns.
+
 ## [0.17.2] — 2026-09-10
 
 ### Added

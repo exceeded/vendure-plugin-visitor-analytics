@@ -64,6 +64,9 @@ export const config: VendureConfig = {
                 recoveryLinkSecret: process.env.HULO_ABANDONMENT_SECRET,
                 recoveryLinkTtlHours: 72,
                 storefrontBaseUrl: 'https://shop.example.com',
+                // Opt-out link signing (0.18.0). Falls back to
+                // recoveryLinkSecret, then signingSecret.
+                optOutSecret: process.env.HULO_ABANDONMENT_OPTOUT_SECRET,
             },
         }),
     ],
@@ -101,6 +104,8 @@ server-side scanners look those event types up by name.
 | `hulo.checkoutCompleted(orderCode, totalMinor)` | on the thank-you page | closes any open `abandoned_cart` row for this session |
 | `hulo.rageClick(selector)` / `hulo.deadClick(selector)` | fire yourself if you have a better signal than the auto-detector | rage-click / dead-click hot-spot lists |
 | `hulo.restoreCart(token)` | on your `/cart/restore?t=...` route | rebuild a cart from a signed recovery link |
+| `hulo.resumeCart(token)` | same route, when you can resume the visitor's open order | as above, plus `resumeOrderCode` while the bound order is still open (0.18.0) |
+| `hulo.recoveryConverted(orderCode)` | on the thank-you page | attributes the order to the recovery link the visitor arrived through (0.18.0) |
 
 Full payload shapes:
 
@@ -130,11 +135,26 @@ needs a route that:
 
 1. Reads `?t=` from the URL
 2. Calls `GET /ees/recover-cart?t=<token>` to fetch `{ items: [...] }`
+   (or `POST /ees/recover-cart/resume?t=<token>` — see below)
 3. Re-adds each `{ variantId, qty }` via your Vendure order API (usually
    `addItemToOrder(productVariantId, quantity)`) — check the result is an
    `Order`, not an `ErrorResult` (out of stock, purchase limit…)
 4. Shows the basket when done — open your cart drawer or navigate to your
    cart page, whichever your storefront has (don't assume a `/cart` route)
+5. On the thank-you page, calls `hulo.recoveryConverted(order.code)` (or
+   `POST /ees/recover-cart/converted { t, orderCode }`) so the cart is
+   attributed to the link — the helper remembers `t` in `sessionStorage`
+   from step 2, so this is a no-op for visitors who did not arrive through
+   a recovery link
+
+**Resuming the visitor's order (0.18.0).** When the host mints the link
+with `issueRecoveryLink(id, { resumeOrderCode })`, both recovery endpoints
+return `orderCode`, `orderState` and `resumable`, and the `resume` endpoint
+adds `resumeOrderCode` — non-null only while that order is still in
+`AddingItems` / `ArrangingPayment`. The Shop API cannot adopt an order
+anonymously, so treat it as a hint: a signed-in owner already has it as
+their active order (skip the re-add), a guest gets the items re-added as
+usual. Either way the `items` array is always present as the fallback.
 
 Guard against silently overwriting a live cart — if the visitor
 already has items, show a "you already have items in your cart"
@@ -243,6 +263,49 @@ at the storefront it was abandoned on; channels not listed fall back to
 Set `abandonment.recoveryLinkSecret` in plugin options to enable this —
 without it, the endpoint returns `{ error: 'recovery-disabled-or-not-found' }`.
 
+**Attribution (0.18.0).**
+Every `abandoned_cart` row carries `recoveryStep` — `link_issued` →
+`link_opened` → `resumed` → `converted`, never moving backwards — plus
+`convertedAt`, `convertedOrderId`, `convertedOrderCode` and
+`resumeOrderCode`. Steps advance as the link is minted, exchanged
+(`recover-cart`), resumed (`recover-cart/resume`) and finally reported
+converted by the storefront (`POST /ees/recover-cart/converted
+{ t, orderCode }` — token-bound, the order must exist and be past
+`AddingItems`). The scanner's own `checkout_completed` match still marks
+rows `converted` and stamps `convertedAt`, but leaves `recoveryStep`
+alone — so "converted via link" is exactly `recoveryStep = 'converted'`.
+`GET /ees/abandoned-carts/summary` returns an `attribution` block:
+
+```json
+{ "linkIssued": 120, "linkOpened": 41, "resumed": 9, "convertedViaLink": 14,
+  "convertedViaLinkValueMinor": 184950, "convertedTotal": 37, "optOuts": 3 }
+```
+
+**Email opt-out (0.18.0).**
+Recovery emails must carry an unsubscribe link. Build it with
+`abandonedCartService.buildOptOutLink(email)` and add the headers from
+`abandonedCartService.buildListUnsubscribeHeaders(email)`
+(`List-Unsubscribe` + `List-Unsubscribe-Post: List-Unsubscribe=One-Click`)
+so Gmail / Outlook / Yahoo show their native "Unsubscribe" button. Both
+point at `GET|POST /ees/abandoned-carts/opt-out?e=<token>` on the Vendure
+server: GET renders a small confirmation page, POST is the RFC 8058
+one-click form. The token is `base64url(email).hmac(email)` signed with
+`abandonment.optOutSecret` (default: `recoveryLinkSecret`, then
+`signingSecret`) — nobody can unsubscribe someone else.
+
+Before every send call `await abandonedCartService.isOptedOut(email)`;
+it fails closed (a DB error counts as opted out). Opt-outs live in
+`abandoned_cart_opt_out` (keyed by the SHA-256 of the lower-cased
+address). Admin: `GET /ees/abandoned-carts/opt-outs`,
+`POST /ees/abandoned-carts/opt-outs/remove { email }` after an explicit
+customer request; `GET /ees/abandoned-carts/:id` reports `optedOut`.
+
+**Schema.** The 0.18.0 columns and the opt-out table are added at boot
+with `ADD COLUMN IF NOT EXISTS` / `CREATE TABLE IF NOT EXISTS` (MariaDB
+and PostgreSQL). Installs that run TypeORM migrations for plugins can
+generate one as usual — the `AbandonedCart` entity declares the same
+columns, so the generator finds nothing to add once the plugin has booted.
+
 **Slack notification.**
 `abandonment.slackWebhookUrl` + `abandonment.slackMinValueMinor`
 control an at-most-once Slack post per abandonment above the value
@@ -323,7 +386,10 @@ storefront origin):
 | --- | --- | --- |
 | `POST` | `/ees/track` | ingest a batch of visitor events |
 | `GET`  | `/ees/hulo.js` | typed storefront helper JS (since 0.8.1) |
-| `GET`  | `/ees/recover-cart?t=<token>` | resolve a recovery token → items |
+| `GET`  | `/ees/recover-cart?t=<token>` | resolve a recovery token → items (+ `orderCode`, `orderState`, `resumable` since 0.18.0); 30/min per IP |
+| `POST` | `/ees/recover-cart/resume?t=<token>` | as above plus `resumeOrderCode` while the bound order is open (0.18.0); 30/min per IP |
+| `POST` | `/ees/recover-cart/converted` | `{ t, orderCode }` — attribute a placed order to its recovery link (0.18.0); 10/min per IP |
+| `GET`/`POST` | `/ees/abandoned-carts/opt-out?e=<token>` | email opt-out; POST is RFC 8058 one-click (0.18.0); 10/min per IP |
 | `GET`  | `/ees/recommendations/also-viewed?productId=…` | co-view recs |
 | `GET`  | `/ees/recommendations/personal?visitorId=…` | personalised recs |
 | `GET`  | `/ees/recommendations/trending?hours=…` | most-viewed products |
@@ -352,7 +418,9 @@ Vendure admin session cookie):
 | `GET`  | `/ees/abandoned-carts` | paginated list w/ filters (0.8.0) |
 | `GET`  | `/ees/abandoned-carts/summary` | totals + recovery rate (0.8.0) |
 | `GET`  | `/ees/abandoned-carts/:id` | detail incl. parsed items (0.8.0) |
-| `POST` | `/ees/abandoned-carts/:id/recovery-link` | mint signed URL (0.8.0, `UpdateCustomer`) |
+| `POST` | `/ees/abandoned-carts/:id/recovery-link` | mint signed URL (0.8.0, `UpdateCustomer`); body `{ resumeOrderCode? }` binds it to an order (0.18.0) |
+| `GET`  | `/ees/abandoned-carts/opt-outs` | opted-out addresses (0.18.0) |
+| `POST` | `/ees/abandoned-carts/opt-outs/remove` | `{ email }` — re-enable after an explicit request (0.18.0, `UpdateCustomer`) |
 | `POST` | `/ees/abandoned-carts/:id/status` | mark recovered/dismissed (0.8.0, `UpdateCustomer`) |
 | `GET`  | `/ees/abandoned-carts/export.csv` | CSV export (0.8.0) |
 | `GET`  | `/ees/recommendations/aggregate-now` | force co-view sweep (0.8.0, `SuperAdmin`) |

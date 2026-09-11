@@ -11,7 +11,22 @@ export {
     AbandonedCartService,
     CartSnapshotMeta,
     AbandonmentOptions,
+    IssueRecoveryLinkOptions,
+    RecoveredCart,
+    ResumedCart,
 } from './abandoned-cart.service';
+export {
+    RecoveryStep,
+    RESUMABLE_ORDER_STATES,
+    isResumableOrderState,
+    advanceRecoveryStep,
+    normaliseEmail,
+    hashEmail,
+    buildOptOutToken,
+    verifyOptOutToken,
+    buildOptOutUrl,
+    buildListUnsubscribeHeaders,
+} from './recovery-tokens';
 export { RecommendationsService, RecommendedProduct } from './recommendations.service';
 export { SearchAnalyticsService } from './search-analytics.service';
 export { JourneyBuffsService } from './journey-buffs.service';

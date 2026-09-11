@@ -20,6 +20,7 @@ export const HULO_STOREFRONT_JS = (backendBaseUrl: string, defaultChannelId = 1)
   var CONFIG = {
     endpoint: ${JSON.stringify(backendBaseUrl.replace(/\/$/, '') + '/ees/track')},
     recoverEndpoint: ${JSON.stringify(backendBaseUrl.replace(/\/$/, '') + '/ees/recover-cart')},
+    recoveryTokenKey: 'hulo_recovery_token',
     channelId: ${defaultChannelId},
     debug: false,
     autoRageClick: true,
@@ -199,11 +200,62 @@ export const HULO_STOREFRONT_JS = (backendBaseUrl: string, defaultChannelId = 1)
     restoreCart: function (token) {
       var t = String(token || '').trim();
       if (!t) return Promise.reject(new Error('missing-token'));
+      rememberRecoveryToken(t);
       return fetch(CONFIG.recoverEndpoint + '?t=' + encodeURIComponent(t), {
         credentials: 'include',
       }).then(function (r) { return r.json(); });
     },
+
+    /**
+     * Like restoreCart, but asks the backend to resume the exact order
+     * the link was bound to. The response carries resumeOrderCode
+     * (non-null only while that order is still open) alongside the usual
+     * items — fall back to re-adding the items when it is null.
+     */
+    resumeCart: function (token) {
+      var t = String(token || '').trim();
+      if (!t) return Promise.reject(new Error('missing-token'));
+      rememberRecoveryToken(t);
+      return fetch(CONFIG.recoverEndpoint + '/resume?t=' + encodeURIComponent(t), {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      }).then(function (r) { return r.json(); });
+    },
+
+    /**
+     * Attribution: call from the thank-you page with the placed order's
+     * code. Uses the recovery token remembered by restoreCart /
+     * resumeCart (sessionStorage), so it is a no-op for visitors who did
+     * not arrive through a recovery link. Resolves to null in that case.
+     */
+    recoveryConverted: function (orderCode, token) {
+      var t = String(token || readRecoveryToken() || '').trim();
+      var code = String(orderCode || '').trim();
+      if (!t || !code) return Promise.resolve(null);
+      return fetch(CONFIG.recoverEndpoint + '/converted', {
+        method: 'POST',
+        credentials: 'include',
+        keepalive: true,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ t: t, orderCode: code }),
+      }).then(function (r) { return r.json(); }).then(function (j) {
+        if (j && j.ok) forgetRecoveryToken();
+        return j;
+      }).catch(function () { return null; });
+    },
   };
+
+  function rememberRecoveryToken(t) {
+    try { sessionStorage.setItem(CONFIG.recoveryTokenKey, t); } catch (_e) {}
+  }
+  function readRecoveryToken() {
+    try { return sessionStorage.getItem(CONFIG.recoveryTokenKey); } catch (_e) { return null; }
+  }
+  function forgetRecoveryToken() {
+    try { sessionStorage.removeItem(CONFIG.recoveryTokenKey); } catch (_e) {}
+  }
 
   // ── auto rage-click detector ─────────────────────────────────────
   // Any pointerdown ≥ 3 within 500ms in a 20x20px zone counts.

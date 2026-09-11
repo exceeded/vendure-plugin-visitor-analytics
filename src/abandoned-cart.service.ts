@@ -1,9 +1,18 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { TransactionalConnection } from '@vendure/core';
 import { createHash, randomBytes } from 'crypto';
 import { AbandonedCart, AbandonedCartStatus } from './abandoned-cart.entity';
 import { getOptions } from './plugin';
 import { adapterFor } from '@huloglobal/vendure-licence-sdk';
+import {
+    advanceRecoveryStep,
+    buildListUnsubscribeHeaders,
+    buildOptOutUrl,
+    hashEmail,
+    isResumableOrderState,
+    normaliseEmail,
+    sanitiseOrderCode,
+} from './recovery-tokens';
 
 const loggerCtx = 'HuloAbandonedCartService';
 
@@ -59,11 +68,86 @@ export interface AbandonmentOptions {
      *  `licensedock` gets a link to that storefront. Falls back to
      *  `storefrontBaseUrl` for channels not listed. */
     storefrontBaseUrls?: Record<string, string>;
+    /** HMAC secret for the email opt-out links
+     *  (`GET|POST /ees/abandoned-carts/opt-out?e=…`). Defaults to
+     *  `recoveryLinkSecret`, then the plugin-level `signingSecret`. When
+     *  none of the three is set, opt-out links cannot be built and the
+     *  endpoint rejects every token. */
+    optOutSecret?: string;
 }
 
+/** Options for `issueRecoveryLink`. */
+export interface IssueRecoveryLinkOptions {
+    /** Bind the link to a specific open Vendure order (its `code`). The
+     *  storefront can then resume that order — via
+     *  `POST /ees/recover-cart/resume` — instead of rebuilding a cart, as
+     *  long as the order is still in `AddingItems` / `ArrangingPayment`. */
+    resumeOrderCode?: string | null;
+}
+
+/** What `findByRecoveryToken` hands the storefront. */
+export interface RecoveredCart {
+    id: number;
+    currency: string;
+    items: any[];
+    email: string | null;
+    /** Order code the link was bound to at issue time, if any. */
+    orderCode: string | null;
+    /** Live state of that order (null when unbound or the order is gone). */
+    orderState: string | null;
+    /** True when `orderCode` is set and the order can still be picked up. */
+    resumable: boolean;
+    channelId: number;
+}
+
+/** Result of `resumeByRecoveryToken`. */
+export interface ResumedCart extends RecoveredCart {
+    /** Present only when the bound order is still open — the storefront
+     *  should use it; otherwise fall back to re-adding `items`. */
+    resumeOrderCode: string | null;
+}
+
+interface OrderRow { id: number; code: string; state: string; channelId: number | null }
+
 @Injectable()
-export class AbandonedCartService {
+export class AbandonedCartService implements OnApplicationBootstrap {
     constructor(private connection: TransactionalConnection) {}
+
+    /** Add the 0.18.0 columns + the opt-out table on installs that don't
+     *  run TypeORM migrations for plugins. Idempotent; never blocks boot. */
+    async onApplicationBootstrap(): Promise<void> {
+        try {
+            await this.ensureSchema();
+        } catch (e: any) {
+            Logger.warn(`Schema check failed (will retry next boot): ${e?.message}`, loggerCtx);
+        }
+    }
+
+    async ensureSchema(): Promise<void> {
+        const conn = adapterFor(this.connection.rawConnection);
+        const cols: Array<[string, string]> = [
+            ['resumeOrderCode', 'VARCHAR(32) NULL'],
+            ['recoveryStep', 'VARCHAR(16) NULL'],
+            ['convertedAt', 'DATETIME(3) NULL'],
+            ['convertedOrderId', 'INT NULL'],
+            ['convertedOrderCode', 'VARCHAR(32) NULL'],
+        ];
+        for (const [name, type] of cols) {
+            await conn.query(`ALTER TABLE abandoned_cart ADD COLUMN IF NOT EXISTS ${name} ${type}`);
+        }
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS abandoned_cart_opt_out (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                emailHash VARCHAR(64) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                channelId INT NULL,
+                source VARCHAR(32) NOT NULL DEFAULT 'link',
+                ip VARCHAR(45) NULL,
+                createdAt DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+                UNIQUE INDEX abandoned_cart_opt_out_hash_uniq (emailHash)
+            )
+        `);
+    }
 
     private opts(): Required<AbandonmentOptions> {
         const raw = (getOptions() as any).abandonment as AbandonmentOptions | undefined;
@@ -75,6 +159,7 @@ export class AbandonedCartService {
             recoveryLinkTtlHours: raw?.recoveryLinkTtlHours ?? 72,
             storefrontBaseUrl: raw?.storefrontBaseUrl ?? getOptions().publicBaseUrl,
             storefrontBaseUrls: raw?.storefrontBaseUrls ?? {},
+            optOutSecret: raw?.optOutSecret ?? raw?.recoveryLinkSecret ?? (getOptions() as any).signingSecret ?? '',
         };
     }
 
@@ -98,7 +183,7 @@ export class AbandonedCartService {
         //    matching checkout_completed lands afterwards.
         const converted = await conn.query(
             `UPDATE abandoned_cart ac
-             SET ac.status = 'converted', ac.recoveredAt = NOW()
+             SET ac.status = 'converted', ac.recoveredAt = NOW(), ac.convertedAt = COALESCE(ac.convertedAt, NOW())
              WHERE ac.status = 'abandoned'
                AND EXISTS (
                  SELECT 1 FROM visitor_event ve
@@ -309,13 +394,22 @@ export class AbandonedCartService {
      * restore the cart. Returns null when the recovery-link secret is
      * unset (feature disabled). Idempotent: reissues a fresh token so
      * you can safely regenerate before every send.
+     *
+     * Pass `{ resumeOrderCode }` to bind the link to the visitor's open
+     * Vendure order: `findByRecoveryToken` / the resume endpoint then
+     * return that code (while the order is still `AddingItems` /
+     * `ArrangingPayment`) so the storefront can pick up the same order
+     * instead of rebuilding it. Passing `{ resumeOrderCode: null }`
+     * clears a previous binding; omitting the option keeps it.
+     *
+     * Also advances `recoveryStep` to `link_issued`.
      */
-    async issueRecoveryLink(cartId: number): Promise<string | null> {
+    async issueRecoveryLink(cartId: number, options: IssueRecoveryLinkOptions = {}): Promise<string | null> {
         const o = this.opts();
         if (!o.recoveryLinkSecret) return null;
         const conn = adapterFor(this.connection.rawConnection);
         const rows: any[] = await conn.query(
-            `SELECT ac.sessionId, ac.visitorId, ac.channelId, ch.code AS channelCode
+            `SELECT ac.sessionId, ac.visitorId, ac.channelId, ac.recoveryStep, ch.code AS channelCode
              FROM abandoned_cart ac LEFT JOIN channel ch ON ch.id = ac.channelId
              WHERE ac.id = ? LIMIT 1`,
             [cartId],
@@ -323,10 +417,21 @@ export class AbandonedCartService {
         if (!rows?.length) return null;
         const token = randomBytes(24).toString('base64url');
         const expiresAt = new Date(Date.now() + o.recoveryLinkTtlHours * 3600_000);
-        await conn.query(
-            `UPDATE abandoned_cart SET recoveryToken = ?, recoveryTokenExpiresAt = ? WHERE id = ?`,
-            [token, expiresAt, cartId],
-        );
+        const step = advanceRecoveryStep(rows[0].recoveryStep, 'link_issued');
+        if (options.resumeOrderCode !== undefined) {
+            const code = options.resumeOrderCode === null ? null : sanitiseOrderCode(options.resumeOrderCode) || null;
+            await conn.query(
+                `UPDATE abandoned_cart
+                 SET recoveryToken = ?, recoveryTokenExpiresAt = ?, resumeOrderCode = ?, recoveryStep = ?
+                 WHERE id = ?`,
+                [token, expiresAt, code, step, cartId],
+            );
+        } else {
+            await conn.query(
+                `UPDATE abandoned_cart SET recoveryToken = ?, recoveryTokenExpiresAt = ?, recoveryStep = ? WHERE id = ?`,
+                [token, expiresAt, step, cartId],
+            );
+        }
         return `${this.storefrontBaseFor(rows[0].channelCode)}/cart/restore?t=${token}`;
     }
 
@@ -343,18 +448,19 @@ export class AbandonedCartService {
      * the token is unknown, expired, or the cart is already recovered.
      * Storefront calls this via `/ees/recover-cart?t=...` to rebuild the
      * cart from the persisted itemsJson.
+     *
+     * Since 0.18.0 the result also carries `orderCode` / `orderState` /
+     * `resumable` when the link was bound to an order, and the call
+     * advances `recoveryStep` to `link_opened`.
      */
-    async findByRecoveryToken(token: string): Promise<{
-        id: number;
-        currency: string;
-        items: any[];
-        email: string | null;
-    } | null> {
+    async findByRecoveryToken(token: string): Promise<RecoveredCart | null> {
         const conn = adapterFor(this.connection.rawConnection);
+        const t = String(token || '').trim();
+        if (!t || t.length > 128) return null;
         const rows: any[] = await conn.query(
-            `SELECT id, currency, itemsJson, email, recoveryTokenExpiresAt, status
+            `SELECT id, currency, itemsJson, email, recoveryTokenExpiresAt, status, resumeOrderCode, recoveryStep, channelId
              FROM abandoned_cart WHERE recoveryToken = ? LIMIT 1`,
-            [token],
+            [t],
         );
         if (!rows?.length) return null;
         const r = rows[0];
@@ -366,9 +472,252 @@ export class AbandonedCartService {
             );
             return null;
         }
+        const step = advanceRecoveryStep(r.recoveryStep, 'link_opened');
+        if (step !== r.recoveryStep) {
+            await conn.query(`UPDATE abandoned_cart SET recoveryStep = ? WHERE id = ?`, [step, r.id]);
+        }
+        return this.buildRecoveredCart(r);
+    }
+
+    /**
+     * Token-bound "resume" — the storefront calls this (via
+     * `POST /ees/recover-cart/resume?t=…`) when it would rather pick up
+     * the exact order the visitor left than rebuild a cart. Returns the
+     * same payload as `findByRecoveryToken` plus `resumeOrderCode`, which
+     * is set only while the bound order is still open. Advances
+     * `recoveryStep` to `resumed` (only when there is an order to resume,
+     * so the funnel column stays honest).
+     */
+    async resumeByRecoveryToken(token: string): Promise<ResumedCart | null> {
+        const cart = await this.findByRecoveryToken(token);
+        if (!cart) return null;
+        const resumeOrderCode = cart.resumable ? cart.orderCode : null;
+        if (resumeOrderCode) {
+            const conn = adapterFor(this.connection.rawConnection);
+            await conn.query(
+                `UPDATE abandoned_cart SET recoveryStep = ? WHERE id = ? AND (recoveryStep IS NULL OR recoveryStep IN ('link_issued','link_opened'))`,
+                ['resumed', cart.id],
+            );
+        }
+        return { ...cart, resumeOrderCode };
+    }
+
+    /**
+     * Attribution: the restored cart checked out. Called by the storefront
+     * (`POST /ees/recover-cart/converted { t, orderCode }`) from the
+     * confirmation page. Token-bound so nobody can mark a stranger's cart
+     * converted; the order must exist and be past `AddingItems`.
+     *
+     * Deliberately ignores token expiry and the row's status — a visitor
+     * who opens the link at hour 71 and pays at hour 73 still converted.
+     * Idempotent.
+     */
+    async markConvertedByToken(token: string, orderCode: string): Promise<
+        { ok: true; cartId: number; orderCode: string; alreadyConverted: boolean }
+        | { ok: false; error: 'invalid-token' | 'order-not-found' | 'order-not-placed' }
+    > {
+        const conn = adapterFor(this.connection.rawConnection);
+        const t = String(token || '').trim();
+        const code = sanitiseOrderCode(orderCode);
+        if (!t || t.length > 128 || !code) return { ok: false, error: 'invalid-token' };
+        const rows: any[] = await conn.query(
+            `SELECT id, status, convertedOrderCode FROM abandoned_cart WHERE recoveryToken = ? LIMIT 1`,
+            [t],
+        );
+        if (!rows?.length) return { ok: false, error: 'invalid-token' };
+        const cart = rows[0];
+        if (cart.status === 'converted' && cart.convertedOrderCode === code) {
+            return { ok: true, cartId: Number(cart.id), orderCode: code, alreadyConverted: true };
+        }
+        const order = await this.lookupOrder(code);
+        if (!order) return { ok: false, error: 'order-not-found' };
+        if (order.state === 'AddingItems' || order.state === 'Cancelled' || order.state === 'Draft') {
+            return { ok: false, error: 'order-not-placed' };
+        }
+        await conn.query(
+            `UPDATE abandoned_cart
+             SET status = 'converted',
+                 recoveredAt = COALESCE(recoveredAt, NOW(3)),
+                 convertedAt = COALESCE(convertedAt, NOW(3)),
+                 convertedOrderId = ?,
+                 convertedOrderCode = ?,
+                 recoveryOrderId = COALESCE(recoveryOrderId, ?),
+                 recoveryStep = 'converted'
+             WHERE id = ?`,
+            [order.id, order.code, order.id, cart.id],
+        );
+        Logger.log(`Recovery link converted: cart=${cart.id} order=${order.code}`, loggerCtx);
+        return { ok: true, cartId: Number(cart.id), orderCode: order.code, alreadyConverted: false };
+    }
+
+    // ── opt-out ─────────────────────────────────────────────────────
+
+    private optOutSecret(): string {
+        return this.opts().optOutSecret;
+    }
+
+    /** True when the address has asked not to receive recovery emails.
+     *  Hosts MUST check this before every send. Fail-open on DB errors
+     *  would mean emailing someone who opted out, so this fails closed. */
+    async isOptedOut(email: string): Promise<boolean> {
+        const e = normaliseEmail(email);
+        if (!e) return false;
+        try {
+            const conn = adapterFor(this.connection.rawConnection);
+            const rows: any[] = await conn.query(
+                `SELECT 1 AS x FROM abandoned_cart_opt_out WHERE emailHash = ? LIMIT 1`,
+                [hashEmail(e)],
+            );
+            return !!rows?.length;
+        } catch (err: any) {
+            Logger.warn(`isOptedOut(${e}) failed — treating as opted out: ${err?.message}`, loggerCtx);
+            return true;
+        }
+    }
+
+    /** Record an opt-out. Idempotent. Returns false for a malformed email. */
+    async optOut(email: string, meta: { source?: string; channelId?: number | null; ip?: string | null } = {}): Promise<boolean> {
+        const e = normaliseEmail(email);
+        if (!e) return false;
+        const conn = adapterFor(this.connection.rawConnection);
+        await conn.query(
+            `INSERT INTO abandoned_cart_opt_out (emailHash, email, channelId, source, ip, createdAt)
+             VALUES (?, ?, ?, ?, ?, NOW(3))
+             ON DUPLICATE KEY UPDATE email = VALUES(email)`,
+            [hashEmail(e), e, meta.channelId ?? null, String(meta.source || 'link').slice(0, 32), meta.ip ? String(meta.ip).slice(0, 45) : null],
+            { conflictColumns: ['emailHash'] },
+        );
+        return true;
+    }
+
+    /** Remove an opt-out (admin action after an explicit customer request). */
+    async optIn(email: string): Promise<boolean> {
+        const e = normaliseEmail(email);
+        if (!e) return false;
+        const conn = adapterFor(this.connection.rawConnection);
+        const res = await conn.query(
+            `DELETE FROM abandoned_cart_opt_out WHERE emailHash = ?`,
+            [hashEmail(e)],
+            { needAffected: true },
+        );
+        return Number(res?.affectedRows ?? 0) > 0;
+    }
+
+    async listOptOuts(take = 50, skip = 0): Promise<{ items: any[]; total: number }> {
+        const conn = adapterFor(this.connection.rawConnection);
+        const [rows, totalRow] = await Promise.all([
+            conn.query(
+                `SELECT id, email, channelId, source, createdAt FROM abandoned_cart_opt_out
+                 ORDER BY createdAt DESC LIMIT ? OFFSET ?`,
+                [take, skip],
+            ),
+            conn.query(`SELECT COUNT(*) AS c FROM abandoned_cart_opt_out`),
+        ]);
+        return { items: rows, total: Number(totalRow?.[0]?.c || 0) };
+    }
+
+    /** Absolute opt-out URL for an email, on the Vendure server's public
+     *  origin. Null when no secret is configured. */
+    buildOptOutLink(email: string): string | null {
+        return buildOptOutUrl(getOptions().publicBaseUrl, email, this.optOutSecret());
+    }
+
+    /** `List-Unsubscribe` + `List-Unsubscribe-Post` headers for a recovery
+     *  email to `email`. Null when opt-out links are disabled. */
+    buildListUnsubscribeHeaders(email: string): { 'List-Unsubscribe': string; 'List-Unsubscribe-Post': string } | null {
+        return buildListUnsubscribeHeaders(getOptions().publicBaseUrl, email, this.optOutSecret());
+    }
+
+    /** Exposed for the controller — verifies an `e=` token. */
+    getOptOutSecret(): string {
+        return this.optOutSecret();
+    }
+
+    // ── attribution ─────────────────────────────────────────────────
+
+    /** Recovery-link funnel for the admin summary: how many carts got a
+     *  link, how many opened it, resumed, converted — and the value of
+     *  the carts the link brought back. */
+    async attributionSummary(since: Date): Promise<{
+        linkIssued: number;
+        linkOpened: number;
+        resumed: number;
+        convertedViaLink: number;
+        convertedViaLinkValueMinor: number;
+        convertedTotal: number;
+        optOuts: number;
+    }> {
+        const conn = adapterFor(this.connection.rawConnection);
+        const rows: any[] = await conn.query(
+            `SELECT
+                SUM(CASE WHEN recoveryStep IS NOT NULL THEN 1 ELSE 0 END) AS linkIssued,
+                SUM(CASE WHEN recoveryStep IN ('link_opened','resumed','converted') THEN 1 ELSE 0 END) AS linkOpened,
+                SUM(CASE WHEN recoveryStep IN ('resumed','converted') THEN 1 ELSE 0 END) AS resumed,
+                SUM(CASE WHEN recoveryStep = 'converted' THEN 1 ELSE 0 END) AS convertedViaLink,
+                SUM(CASE WHEN recoveryStep = 'converted' THEN totalMinor ELSE 0 END) AS convertedViaLinkValueMinor,
+                SUM(CASE WHEN status = 'converted' THEN 1 ELSE 0 END) AS convertedTotal
+             FROM abandoned_cart
+             WHERE abandonedAt >= ?`,
+            [since],
+        );
+        let optOuts = 0;
+        try {
+            const o: any[] = await conn.query(`SELECT COUNT(*) AS c FROM abandoned_cart_opt_out WHERE createdAt >= ?`, [since]);
+            optOuts = Number(o?.[0]?.c || 0);
+        } catch { /* table missing on a very old install — reported as 0 */ }
+        const s = rows?.[0] || {};
+        return {
+            linkIssued: Number(s.linkIssued || 0),
+            linkOpened: Number(s.linkOpened || 0),
+            resumed: Number(s.resumed || 0),
+            convertedViaLink: Number(s.convertedViaLink || 0),
+            convertedViaLinkValueMinor: Number(s.convertedViaLinkValueMinor || 0),
+            convertedTotal: Number(s.convertedTotal || 0),
+            optOuts,
+        };
+    }
+
+    // ── order lookup ────────────────────────────────────────────────
+
+    private async lookupOrder(code: string): Promise<OrderRow | null> {
+        const c = sanitiseOrderCode(code);
+        if (!c) return null;
+        const conn = adapterFor(this.connection.rawConnection);
+        try {
+            const rows: any[] = await conn.query(
+                'SELECT o.id, o.code, o.state, oc.channelId AS channelId\n' +
+                'FROM `order` o LEFT JOIN order_channels_channel oc ON oc.orderId = o.id\n' +
+                'WHERE o.code = ? LIMIT 1',
+                [c],
+            );
+            if (!rows?.length) return null;
+            const r = rows[0];
+            return { id: Number(r.id), code: String(r.code), state: String(r.state), channelId: r.channelId == null ? null : Number(r.channelId) };
+        } catch (e: any) {
+            Logger.warn(`Order lookup for ${c} failed: ${e?.message}`, loggerCtx);
+            return null;
+        }
+    }
+
+    private async buildRecoveredCart(r: any): Promise<RecoveredCart> {
         let items: any[] = [];
         try { items = JSON.parse(r.itemsJson || '[]'); } catch {}
-        return { id: Number(r.id), currency: String(r.currency || 'GBP'), items, email: r.email };
+        const orderCode = sanitiseOrderCode(r.resumeOrderCode) || null;
+        let orderState: string | null = null;
+        if (orderCode) {
+            const order = await this.lookupOrder(orderCode);
+            orderState = order?.state ?? null;
+        }
+        return {
+            id: Number(r.id),
+            currency: String(r.currency || 'GBP'),
+            items,
+            email: r.email ?? null,
+            orderCode,
+            orderState,
+            resumable: !!orderCode && isResumableOrderState(orderState),
+            channelId: Number(r.channelId || 1),
+        };
     }
 
     async markStatus(cartId: number, status: AbandonedCartStatus): Promise<boolean> {
