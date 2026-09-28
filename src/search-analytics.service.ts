@@ -26,8 +26,9 @@ export class SearchAnalyticsService {
     }>> {
         const since = new Date(Date.now() - sinceDays * 86400_000);
         const conn = adapterFor(this.connection.rawConnection);
-        // The CAST is guarded (Postgres raises on a non-numeric token) and HAVING repeats
-        // the expression (Postgres does not resolve output aliases there).
+        // The CAST is guarded (Postgres raises on a non-numeric token). The empty-query
+        // filter sits in WHERE: MySQL resolves only the output alias in HAVING while
+        // Postgres accepts only the expression, and WHERE takes the expression on both.
         const rows: any[] = await conn.query(
             `SELECT
                 LOWER(TRIM(BOTH '"' FROM SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"query":"', -1), '"', 1))) AS query,
@@ -38,8 +39,8 @@ export class SearchAnalyticsService {
                AND meta LIKE '%"eventType":"search"%'
                AND \`channelId\` = ?
                AND \`createdAt\` >= ?
+               AND LOWER(TRIM(BOTH '"' FROM SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"query":"', -1), '"', 1))) <> ''
              GROUP BY LOWER(TRIM(BOTH '"' FROM SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"query":"', -1), '"', 1)))
-             HAVING LOWER(TRIM(BOTH '"' FROM SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"query":"', -1), '"', 1))) <> ''
              ORDER BY searches DESC
              LIMIT ?`,
             [channelId, since, Math.min(Math.max(1, limit), 500)],
@@ -67,8 +68,8 @@ export class SearchAnalyticsService {
                AND meta LIKE '%"resultsCount":0%'
                AND \`channelId\` = ?
                AND \`createdAt\` >= ?
+               AND LOWER(TRIM(BOTH '"' FROM SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"query":"', -1), '"', 1))) <> ''
              GROUP BY LOWER(TRIM(BOTH '"' FROM SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"query":"', -1), '"', 1)))
-             HAVING LOWER(TRIM(BOTH '"' FROM SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"query":"', -1), '"', 1))) <> ''
              ORDER BY searches DESC
              LIMIT ?`,
             [channelId, since, Math.min(Math.max(1, limit), 500)],

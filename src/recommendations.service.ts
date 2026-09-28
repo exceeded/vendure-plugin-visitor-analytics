@@ -259,8 +259,9 @@ export class RecommendationsService {
     async trending(channelId = 1, sinceHours = 24, limit = 10): Promise<RecommendedProduct[]> {
         const conn = adapterFor(this.connection.rawConnection);
         const since = new Date(Date.now() - sinceHours * 3600_000);
-        // The digits guard keeps CAST from raising on Postgres; GROUP BY / HAVING repeat
-        // the expression because Postgres does not resolve output aliases in HAVING.
+        // The digits guard keeps CAST from raising on Postgres. No HAVING: MySQL only
+        // resolves the output alias there while Postgres only accepts the expression,
+        // so the id filter lives in WHERE as a string compare (no cast, order-safe).
         const rows: any[] = await conn.query(
             `SELECT
                 CAST(${PRODUCT_ID_TOKEN} AS UNSIGNED) AS \`productId\`,
@@ -271,8 +272,8 @@ export class RecommendationsService {
                AND \`channelId\` = ?
                AND \`createdAt\` >= ?
                AND ${digitsOnly(conn.dialect, PRODUCT_ID_TOKEN)}
+               AND ${PRODUCT_ID_TOKEN} <> '0'
              GROUP BY CAST(${PRODUCT_ID_TOKEN} AS UNSIGNED)
-             HAVING CAST(${PRODUCT_ID_TOKEN} AS UNSIGNED) > 0
              ORDER BY views DESC
              LIMIT ?`,
             [channelId, since, Math.min(Math.max(1, limit), 50)],

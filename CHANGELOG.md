@@ -5,6 +5,19 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.5] — 2026-09-28
+
+### Fixed
+- **MySQL/MariaDB regression in 0.18.4.** The `HAVING` rewrite made
+  `trending`, `topQueries` and `zeroResultQueries` fail on MySQL/MariaDB
+  ("Unknown column 'meta' in 'HAVING'": MySQL resolves only the output
+  alias there, Postgres only the expression). The filters now sit in
+  `WHERE` as the expression, which both accept. 0.18.4 is deprecated on
+  npm.
+- The corpus test now also runs every statement through a server-side
+  `PREPARE` on MySQL/MariaDB (`HULO_MYSQL_URL`), so a fix for one dialect
+  can no longer break the other unnoticed.
+
 ## [0.18.4] — 2026-09-28
 
 Optimisation and Postgres pass — no new features, no new tables, no new

@@ -318,7 +318,7 @@ that run TypeORM migrations for plugins can generate one as usual — the
 nothing to add once the plugin has booted. Closed carts (expired /
 converted / dismissed) older than 180 days are pruned monthly on the
 worker; every raw statement in the plugin is checked against PostgreSQL
-17 by `tests/pg-corpus.test.ts`.
+17 and MariaDB by `tests/pg-corpus.test.ts`.
 
 **Slack notification.**
 `abandonment.slackWebhookUrl` + `abandonment.slackMinValueMinor`
