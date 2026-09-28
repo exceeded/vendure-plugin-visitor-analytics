@@ -28,6 +28,9 @@ const loggerCtx = 'HuloAnalyticsScanner';
 export class AbandonedCartScanner implements OnApplicationBootstrap, OnApplicationShutdown {
     private cartTimer: NodeJS.Timeout | null = null;
     private recsTimer: NodeJS.Timeout | null = null;
+    private pruneTimer: NodeJS.Timeout | null = null;
+    /** `YYYY-MM` of the last completed prune (in-memory: a restart re-runs it once, harmlessly). */
+    private prunedMonth = '';
 
     constructor(
         private readonly cartSvc: AbandonedCartService,
@@ -71,11 +74,31 @@ export class AbandonedCartScanner implements OnApplicationBootstrap, OnApplicati
             });
         }, 6 * 60 * 60_000);
 
+        // Monthly housekeeping: closed carts older than 180 days and co-view pairs
+        // not refreshed in 90 days. Checked every 6 h, runs once per calendar month.
+        this.pruneTimer = setInterval(() => { this.pruneIfDue().catch(() => undefined); }, 6 * 60 * 60_000);
+        setTimeout(() => { this.pruneIfDue().catch(() => undefined); }, 10 * 60_000).unref?.();
+
         Logger.log('Abandoned-cart + recommendations scanners started (worker)', loggerCtx);
+    }
+
+    private async pruneIfDue(): Promise<void> {
+        const month = new Date().toISOString().slice(0, 7);
+        if (month === this.prunedMonth) return;
+        this.prunedMonth = month;
+        try {
+            const carts = await this.cartSvc.pruneClosedCarts(180, 5000);
+            const pairs = await this.recsSvc.pruneStalePairs(90, 5000);
+            if (carts || pairs) Logger.log(`Monthly prune: ${carts} closed cart(s) older than 180 days, ${pairs} co-view pair(s) idle for 90 days`, loggerCtx);
+        } catch (e: any) {
+            this.prunedMonth = '';
+            Logger.error(`Monthly prune failed: ${e?.message}`, loggerCtx);
+        }
     }
 
     onApplicationShutdown() {
         if (this.cartTimer) { clearInterval(this.cartTimer); this.cartTimer = null; }
         if (this.recsTimer) { clearInterval(this.recsTimer); this.recsTimer = null; }
+        if (this.pruneTimer) { clearInterval(this.pruneTimer); this.pruneTimer = null; }
     }
 }

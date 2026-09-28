@@ -5,6 +5,59 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.4] — 2026-09-28
+
+Optimisation and Postgres pass — no new features, no new tables, no new
+indexes (nothing to migrate).
+
+### Fixed
+- **Postgres.** Every camelCase column on the entity tables
+  (`visitor_event`, `conversion_goal`, `abandoned_cart`, `product_co_view`)
+  and on the Vendure tables the plugin reads (`customer`, `order`,
+  `order_channels_channel`, `product`, `product_variant`,
+  `product_translation`, `product_variant_translation`) is quoted;
+  `NOW() - INTERVAL …` became `DATE_SUB(…)`; aliases are no longer used in
+  `HAVING`; the personal-recommendations seed query no longer combines
+  `DISTINCT` with an `ORDER BY` on an unselected column; the
+  `CAST(… AS UNSIGNED)` on product ids / result counts is guarded by a
+  digits check (Postgres raises where MySQL returns 0); the co-view upsert
+  quotes its `ON CONFLICT` target; `SUM(boolean)` in the session summary
+  became `MAX(CASE …)`; boolean columns are compared with `TRUE`/`FALSE`;
+  the abandoned-cart controller's queries go through the dialect adapter;
+  and the boot-time `abandoned_cart` ALTERs quote the column name (an
+  install without the migration got a lowercase duplicate) behind an
+  information-schema check (MySQL 8 has no `ADD COLUMN IF NOT EXISTS`).
+  A corpus test (`tests/pg-corpus.test.ts`, skipped unless `HULO_PG_URL`
+  is set) runs all 98 statements against PostgreSQL 17 with TypeORM-quoted
+  stand-ins for the entity and Vendure tables.
+- **`POST /ees/track` and `customerId`.** The customer is resolved from
+  the Vendure session (`activeUserId` → `customer.userId`, cached 10 min);
+  the body value is ignored, so an anonymous beacon can no longer file
+  events under an arbitrary customer id. A storefront that never sent the
+  session (the bundled tracker does not) sees no change: those events
+  were already unlinked.
+- **CORS.** `OPTIONS /ees/track` answers `204` with the same headers as
+  the POST (a JSON `fetch` from another origin sends a preflight). A
+  disallowed origin gets no `Access-Control-Allow-Origin` header at all —
+  the previous `null` is itself a valid origin value.
+
+### Changed
+- **Co-view aggregation.** Pairs are accumulated in memory per
+  (A, B, channel) and written as multi-row upserts in chunks of 500 (one
+  statement per ordered pair before: a 20-product session cost 380 round
+  trips). The end of the last aggregated window is persisted, so
+  overlapping runs — `aggregate-now` after the 6-hourly sweep — count
+  nothing twice; `aggregate-now?force=1` rebuilds regardless.
+- **Live feed.** One query in flight per stream (a slow tick used to
+  queue behind itself every 5 s) and a `: keepalive` comment every 15 s.
+- **CSV exports.** Visitors and abandoned carts stream in id-ordered
+  chunks of 5 000 with back-pressure instead of materialising up to
+  200 000 / 50 000 rows first. Rows are in id (chronological) order.
+- **Housekeeping.** Monthly, on the worker: `abandoned_cart` rows in
+  status expired / converted / dismissed older than 180 days and
+  `product_co_view` pairs not refreshed in 90 days are deleted in batches
+  of 5 000.
+
 ## [0.18.3] — 2026-09-28
 
 ### Changed

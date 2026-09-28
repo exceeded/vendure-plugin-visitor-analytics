@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { TransactionalConnection } from '@vendure/core';
 import { adapterFor } from '@huloglobal/vendure-licence-sdk';
+import { RESULTS_COUNT_TOKEN, digitsOnly } from './sql-fragments';
 
 /**
  * Zero-schema-cost search analytics: reads back over the existing
@@ -24,18 +25,21 @@ export class SearchAnalyticsService {
         avgResults: number;
     }>> {
         const since = new Date(Date.now() - sinceDays * 86400_000);
-        const rows: any[] = await adapterFor(this.connection.rawConnection).query(
+        const conn = adapterFor(this.connection.rawConnection);
+        // The CAST is guarded (Postgres raises on a non-numeric token) and HAVING repeats
+        // the expression (Postgres does not resolve output aliases there).
+        const rows: any[] = await conn.query(
             `SELECT
                 LOWER(TRIM(BOTH '"' FROM SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"query":"', -1), '"', 1))) AS query,
                 COUNT(*) AS searches,
-                AVG(CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"resultsCount":', -1), ',', 1) AS UNSIGNED)) AS avgResults
+                AVG(CASE WHEN ${digitsOnly(conn.dialect, RESULTS_COUNT_TOKEN)} THEN CAST(${RESULTS_COUNT_TOKEN} AS UNSIGNED) END) AS \`avgResults\`
              FROM visitor_event
              WHERE type = 'event'
                AND meta LIKE '%"eventType":"search"%'
-               AND channelId = ?
-               AND createdAt >= ?
-             GROUP BY query
-             HAVING query <> ''
+               AND \`channelId\` = ?
+               AND \`createdAt\` >= ?
+             GROUP BY LOWER(TRIM(BOTH '"' FROM SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"query":"', -1), '"', 1)))
+             HAVING LOWER(TRIM(BOTH '"' FROM SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"query":"', -1), '"', 1))) <> ''
              ORDER BY searches DESC
              LIMIT ?`,
             [channelId, since, Math.min(Math.max(1, limit), 500)],
@@ -61,10 +65,10 @@ export class SearchAnalyticsService {
              WHERE type = 'event'
                AND meta LIKE '%"eventType":"search"%'
                AND meta LIKE '%"resultsCount":0%'
-               AND channelId = ?
-               AND createdAt >= ?
-             GROUP BY query
-             HAVING query <> ''
+               AND \`channelId\` = ?
+               AND \`createdAt\` >= ?
+             GROUP BY LOWER(TRIM(BOTH '"' FROM SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"query":"', -1), '"', 1)))
+             HAVING LOWER(TRIM(BOTH '"' FROM SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"query":"', -1), '"', 1))) <> ''
              ORDER BY searches DESC
              LIMIT ?`,
             [channelId, since, Math.min(Math.max(1, limit), 500)],
@@ -83,20 +87,20 @@ export class SearchAnalyticsService {
         const since = new Date(Date.now() - sinceDays * 86400_000);
         const rows: any[] = await adapterFor(this.connection.rawConnection).query(
             `SELECT
-                COUNT(DISTINCT ve.sessionId) AS sessionsSearched,
-                COUNT(DISTINCT CASE WHEN adds.sessionId IS NOT NULL THEN ve.sessionId END) AS sessionsAdded
+                COUNT(DISTINCT ve.\`sessionId\`) AS \`sessionsSearched\`,
+                COUNT(DISTINCT CASE WHEN adds.\`sessionId\` IS NOT NULL THEN ve.\`sessionId\` END) AS \`sessionsAdded\`
              FROM visitor_event ve
              LEFT JOIN (
-                SELECT DISTINCT sessionId FROM visitor_event
+                SELECT DISTINCT \`sessionId\` FROM visitor_event
                 WHERE type = 'event'
                   AND meta LIKE '%"eventType":"add_to_cart"%'
-                  AND channelId = ?
-                  AND createdAt >= ?
-             ) adds ON adds.sessionId = ve.sessionId
+                  AND \`channelId\` = ?
+                  AND \`createdAt\` >= ?
+             ) adds ON adds.\`sessionId\` = ve.\`sessionId\`
              WHERE ve.type = 'event'
                AND ve.meta LIKE '%"eventType":"search"%'
-               AND ve.channelId = ?
-               AND ve.createdAt >= ?`,
+               AND ve.\`channelId\` = ?
+               AND ve.\`createdAt\` >= ?`,
             [channelId, since, channelId, since],
         );
         const r = rows?.[0] || {};

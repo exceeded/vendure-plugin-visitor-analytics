@@ -89,7 +89,7 @@ function clampDays(input: any): number {
     return Math.min(Math.max(Number(input) || 7, 1), 365);
 }
 function channelFilter(channelId?: number): { where: string; params: any[] } {
-    if (channelId) return { where: ' AND channelId = ?', params: [channelId] };
+    if (channelId) return { where: ' AND `channelId` = ?', params: [channelId] };
     return { where: '', params: [] };
 }
 
@@ -108,22 +108,22 @@ export class VisitorAnalyticsAdminResolver {
         const days = clampDays(daysInput);
         const c = channelFilter(channelId);
         const totals = await adapterFor(this.connection.rawConnection).query(
-            `SELECT COUNT(DISTINCT visitorId) AS visitors,
-                    COUNT(DISTINCT sessionId) AS sessions,
-                    SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END) AS pageViews,
+            `SELECT COUNT(DISTINCT \`visitorId\`) AS visitors,
+                    COUNT(DISTINCT \`sessionId\`) AS sessions,
+                    SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END) AS \`pageViews\`,
                     COUNT(*) AS events
              FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)${c.where}`,
+             WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY)${c.where}`,
             [days, ...c.params],
         );
         const t = (totals as any[])[0] || {};
         // Aggregate in SQL: the old version pulled every session row of the range into Node.
         const [agg] = await adapterFor(this.connection.rawConnection).query(
-            `SELECT COUNT(*) AS sessions, SUM(CASE WHEN n <= 1 THEN 1 ELSE 0 END) AS bounces, AVG(dur) AS avgDur
-             FROM (SELECT sessionId, COUNT(*) AS n, TIMESTAMPDIFF(SECOND, MIN(createdAt), MAX(createdAt)) AS dur
+            `SELECT COUNT(*) AS sessions, SUM(CASE WHEN n <= 1 THEN 1 ELSE 0 END) AS bounces, AVG(dur) AS \`avgDur\`
+             FROM (SELECT \`sessionId\`, COUNT(*) AS n, TIMESTAMPDIFF(SECOND, MIN(\`createdAt\`), MAX(\`createdAt\`)) AS dur
                      FROM visitor_event
-                    WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)${c.where}
-                    GROUP BY sessionId) s`,
+                    WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY)${c.where}
+                    GROUP BY \`sessionId\`) s`,
             [days, ...c.params],
         ) as any[];
         const ssRows = { length: Number(agg?.sessions) || 0 };
@@ -146,11 +146,11 @@ export class VisitorAnalyticsAdminResolver {
         const days = clampDays(daysInput);
         const c = channelFilter(channelId);
         const rows = await adapterFor(this.connection.rawConnection).query(
-            `SELECT COALESCE(NULLIF(referrerDomain, ''), '(direct)') AS source,
-                    COUNT(DISTINCT visitorId) AS visitors,
-                    COUNT(DISTINCT sessionId) AS sessions
+            `SELECT COALESCE(NULLIF(\`referrerDomain\`, ''), '(direct)') AS source,
+                    COUNT(DISTINCT \`visitorId\`) AS visitors,
+                    COUNT(DISTINCT \`sessionId\`) AS sessions
              FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)${c.where}
+             WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY)${c.where}
              GROUP BY source ORDER BY sessions DESC LIMIT 50`,
             [days, ...c.params],
         );
@@ -170,11 +170,11 @@ export class VisitorAnalyticsAdminResolver {
             `SELECT url,
                     MAX(title) AS title,
                     COUNT(*) AS views,
-                    COUNT(DISTINCT visitorId) AS uniqueVisitors,
-                    AVG(COALESCE(timeOnPageMs, 0)) / 1000 AS avgTimeOnPageSec
+                    COUNT(DISTINCT \`visitorId\`) AS \`uniqueVisitors\`,
+                    AVG(COALESCE(\`timeOnPageMs\`, 0)) / 1000 AS \`avgTimeOnPageSec\`
              FROM visitor_event
              WHERE type = 'pageview'
-               AND createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)${c.where}
+               AND \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY)${c.where}
              GROUP BY url ORDER BY views DESC LIMIT 50`,
             [days, ...c.params],
         );
@@ -202,11 +202,11 @@ export class VisitorAnalyticsAdminResolver {
         for (let i = 0; i < steps.length; i++) {
             const pattern = steps[i];
             const rows = await adapterFor(this.connection.rawConnection).query(
-                `SELECT COUNT(DISTINCT visitorId) AS n
+                `SELECT COUNT(DISTINCT \`visitorId\`) AS n
                  FROM visitor_event
                  WHERE type = 'pageview'
                    AND url LIKE ?
-                   AND createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)${c.where}`,
+                   AND \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY)${c.where}`,
                 [pattern.replace(/\*/g, '%'), days, ...c.params],
             );
             const users = Number((rows as any[])[0]?.n) || 0;
@@ -222,12 +222,12 @@ export class VisitorAnalyticsAdminResolver {
     async huloVisitorJourney(@Args('visitorId') visitorId: string): Promise<any[]> {
         if (!visitorId) return [];
         const rows = await adapterFor(this.connection.rawConnection).query(
-            `SELECT id, createdAt, type, url, title, referrerDomain,
+            `SELECT id, \`createdAt\`, type, url, title, \`referrerDomain\`,
                     country, region, city, browser, os, device,
-                    sessionId, visitorId, customerId
+                    \`sessionId\`, \`visitorId\`, \`customerId\`
              FROM visitor_event
-             WHERE visitorId = ?
-             ORDER BY createdAt ASC LIMIT 1000`,
+             WHERE \`visitorId\` = ?
+             ORDER BY \`createdAt\` ASC LIMIT 1000`,
             [String(visitorId)],
         );
         return rows;

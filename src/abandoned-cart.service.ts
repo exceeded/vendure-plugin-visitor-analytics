@@ -133,7 +133,7 @@ export class AbandonedCartService implements OnApplicationBootstrap {
             ['convertedOrderCode', 'VARCHAR(32) NULL'],
         ];
         for (const [name, type] of cols) {
-            await conn.query(`ALTER TABLE abandoned_cart ADD COLUMN IF NOT EXISTS ${name} ${type}`);
+            await this.addColumnIfMissing(conn, 'abandoned_cart', name, type);
         }
         await conn.query(`
             CREATE TABLE IF NOT EXISTS abandoned_cart_opt_out (
@@ -147,6 +147,46 @@ export class AbandonedCartService implements OnApplicationBootstrap {
                 UNIQUE INDEX abandoned_cart_opt_out_hash_uniq (emailHash)
             )
         `);
+    }
+
+    /** `abandoned_cart` is a TypeORM entity table, so on Postgres its columns are
+     *  quoted camelCase: the column name is backticked here so an install that never
+     *  ran the migration gets `"convertedAt"`, not a lowercase duplicate. The
+     *  information-schema check (case-insensitive) also keeps MySQL 8 happy, which has
+     *  no `ADD COLUMN IF NOT EXISTS`. */
+    private async addColumnIfMissing(conn: ReturnType<typeof adapterFor>, table: string, column: string, ddl: string): Promise<void> {
+        const scope = conn.dialect === 'postgres'
+            ? 'table_catalog = current_database() AND table_schema = current_schema()'
+            : 'table_schema = DATABASE()';
+        const rows: any[] = await conn.query(
+            `SELECT COUNT(*) AS n FROM information_schema.columns WHERE ${scope} AND LOWER(table_name) = LOWER(?) AND LOWER(column_name) = LOWER(?)`,
+            [table, column],
+        ).catch(() => []);
+        if (Number(rows?.[0]?.n ?? rows?.[0]?.N ?? 0) > 0) return;
+        try { await conn.query(`ALTER TABLE ${table} ADD COLUMN \`${column}\` ${ddl}`); }
+        catch (e: any) { if (!/duplicate|exists/i.test(String(e?.message || ''))) throw e; }
+    }
+
+    /** Monthly housekeeping (worker): closed carts older than `days` and stale co-view
+     *  pairs go in id-ordered batches of `batch`. Open (`abandoned`/`recovered`) carts are kept. */
+    async pruneClosedCarts(days = 180, batch = 5000): Promise<number> {
+        const conn = adapterFor(this.connection.rawConnection);
+        let deleted = 0;
+        for (let round = 0; round < 400; round++) {
+            const rows: any[] = await conn.query(
+                `SELECT id FROM abandoned_cart
+                 WHERE status IN ('expired', 'converted', 'dismissed')
+                   AND \`abandonedAt\` < DATE_SUB(NOW(), INTERVAL ? DAY)
+                 ORDER BY id LIMIT ?`,
+                [days, batch],
+            );
+            if (!rows.length) break;
+            const ids = rows.map((r: any) => Number(r.id));
+            await conn.query(`DELETE FROM abandoned_cart WHERE id IN (${ids.map(() => '?').join(',')})`, ids);
+            deleted += ids.length;
+            if (ids.length < batch) break;
+        }
+        return deleted;
     }
 
     private opts(): Required<AbandonmentOptions> {
@@ -192,14 +232,14 @@ export class AbandonedCartService implements OnApplicationBootstrap {
         //    matching checkout_completed lands afterwards.
         const converted = await conn.query(
             `UPDATE abandoned_cart ac
-             SET ac.status = 'converted', ac.recoveredAt = NOW(), ac.convertedAt = COALESCE(ac.convertedAt, NOW())
+             SET ac.status = 'converted', ac.\`recoveredAt\` = NOW(), ac.\`convertedAt\` = COALESCE(ac.\`convertedAt\`, NOW())
              WHERE ac.status = 'abandoned'
                AND EXISTS (
                  SELECT 1 FROM visitor_event ve
-                 WHERE ve.sessionId = ac.sessionId
+                 WHERE ve.\`sessionId\` = ac.\`sessionId\`
                    AND ve.type = 'event'
                    AND ve.meta LIKE '%"eventType":"checkout_completed"%'
-                   AND ve.createdAt > ac.abandonedAt
+                   AND ve.\`createdAt\` > ac.\`abandonedAt\`
                )`,
             undefined,
             { needAffected: true },
@@ -213,62 +253,62 @@ export class AbandonedCartService implements OnApplicationBootstrap {
         const candidates: any[] = await conn.query(
             `SELECT
                 agg.*,
-                c.firstName    AS custFirstName,
-                c.lastName     AS custLastName,
-                c.phoneNumber  AS custPhone
+                c.\`firstName\`    AS \`custFirstName\`,
+                c.\`lastName\`     AS \`custLastName\`,
+                c.\`phoneNumber\`  AS \`custPhone\`
              FROM (SELECT
-                ve.sessionId,
-                MAX(ve.visitorId) AS visitorId,
-                MAX(ve.customerId) AS customerId,
-                MAX(ve.channelId) AS channelId,
-                MIN(ve.createdAt) AS firstAt,
-                MAX(ve.createdAt) AS lastAt,
+                ve.\`sessionId\`,
+                MAX(ve.\`visitorId\`) AS \`visitorId\`,
+                MAX(ve.\`customerId\`) AS \`customerId\`,
+                MAX(ve.\`channelId\`) AS \`channelId\`,
+                MIN(ve.\`createdAt\`) AS \`firstAt\`,
+                MAX(ve.\`createdAt\`) AS \`lastAt\`,
                 -- Landing URL: the earliest URL in the session (window-fn
                 -- would be cleaner but MariaDB 10.2+ has FIRST_VALUE via
                 -- SUBSTRING_INDEX(GROUP_CONCAT()) — same trick we use for
                 -- lastMeta below).
-                SUBSTRING_INDEX(GROUP_CONCAT(ve.url ORDER BY ve.createdAt ASC SEPARATOR '¦'), '¦', 1) AS firstUrl,
-                SUBSTRING_INDEX(GROUP_CONCAT(ve.url ORDER BY ve.createdAt DESC SEPARATOR '¦'), '¦', 1) AS lastUrl,
-                SUBSTRING_INDEX(GROUP_CONCAT(ve.referrer ORDER BY ve.createdAt ASC SEPARATOR '¦'), '¦', 1) AS firstReferrer,
-                SUBSTRING_INDEX(GROUP_CONCAT(ve.referrer ORDER BY ve.createdAt DESC SEPARATOR '¦'), '¦', 1) AS lastReferrer,
-                MAX(ve.utmSource) AS utmSource,
-                MAX(ve.utmMedium) AS utmMedium,
-                MAX(ve.utmCampaign) AS utmCampaign,
-                MAX(ve.country) AS countryCode,
-                MAX(ve.region) AS regionCode,
+                SUBSTRING_INDEX(GROUP_CONCAT(ve.url ORDER BY ve.\`createdAt\` ASC SEPARATOR '¦'), '¦', 1) AS \`firstUrl\`,
+                SUBSTRING_INDEX(GROUP_CONCAT(ve.url ORDER BY ve.\`createdAt\` DESC SEPARATOR '¦'), '¦', 1) AS \`lastUrl\`,
+                SUBSTRING_INDEX(GROUP_CONCAT(ve.referrer ORDER BY ve.\`createdAt\` ASC SEPARATOR '¦'), '¦', 1) AS \`firstReferrer\`,
+                SUBSTRING_INDEX(GROUP_CONCAT(ve.referrer ORDER BY ve.\`createdAt\` DESC SEPARATOR '¦'), '¦', 1) AS \`lastReferrer\`,
+                MAX(ve.\`utmSource\`) AS \`utmSource\`,
+                MAX(ve.\`utmMedium\`) AS \`utmMedium\`,
+                MAX(ve.\`utmCampaign\`) AS \`utmCampaign\`,
+                MAX(ve.country) AS \`countryCode\`,
+                MAX(ve.region) AS \`regionCode\`,
                 MAX(ve.ip) AS ip,
-                MAX(ve.ipHash) AS ipHash,
-                MAX(ve.userAgent) AS userAgent,
+                MAX(ve.\`ipHash\`) AS \`ipHash\`,
+                MAX(ve.\`userAgent\`) AS \`userAgent\`,
                 MAX(ve.browser) AS browser,
                 -- Total pageview events in the same session — cheap
                 -- "high-intent vs quick-bounce" facet in the admin.
-                SUM(CASE WHEN ve.type = 'pageview' THEN 1 ELSE 0 END) AS pageViews,
-                SUBSTRING_INDEX(GROUP_CONCAT(ve.meta ORDER BY ve.createdAt DESC SEPARATOR '¦'), '¦', 1) AS lastMeta
+                SUM(CASE WHEN ve.type = 'pageview' THEN 1 ELSE 0 END) AS \`pageViews\`,
+                SUBSTRING_INDEX(GROUP_CONCAT(ve.meta ORDER BY ve.\`createdAt\` DESC SEPARATOR '¦'), '¦', 1) AS \`lastMeta\`
              FROM visitor_event ve
-             WHERE ve.sessionId IN (
-                 SELECT DISTINCT ve0.sessionId
+             WHERE ve.\`sessionId\` IN (
+                 SELECT DISTINCT ve0.\`sessionId\`
                  FROM visitor_event ve0
                  WHERE ve0.type = 'event'
                    AND ve0.meta LIKE '%"eventType":"cart_snapshot"%'
-                   AND ve0.createdAt >= (NOW() - INTERVAL 48 HOUR)
-                   AND ve0.createdAt <= ?
+                   AND ve0.\`createdAt\` >= DATE_SUB(NOW(), INTERVAL 48 HOUR)
+                   AND ve0.\`createdAt\` <= ?
              )
                AND NOT EXISTS (
                  SELECT 1 FROM visitor_event ve2
-                 WHERE ve2.sessionId = ve.sessionId
+                 WHERE ve2.\`sessionId\` = ve.\`sessionId\`
                    AND ve2.type = 'event'
                    AND ve2.meta LIKE '%"eventType":"checkout_completed"%'
                )
                AND NOT EXISTS (
                  SELECT 1 FROM visitor_event ve3
-                 WHERE ve3.sessionId = ve.sessionId
+                 WHERE ve3.\`sessionId\` = ve.\`sessionId\`
                    AND ve3.type = 'event'
                    AND ve3.meta LIKE '%"eventType":"cart_snapshot"%'
-                   AND ve3.createdAt > ?
+                   AND ve3.\`createdAt\` > ?
                )
-             GROUP BY ve.sessionId
+             GROUP BY ve.\`sessionId\`
              LIMIT 500) agg
-             LEFT JOIN customer c ON c.id = agg.customerId AND c.deletedAt IS NULL`,
+             LEFT JOIN customer c ON c.id = agg.\`customerId\` AND c.\`deletedAt\` IS NULL`,
             [cutoff, cutoff],
         );
 
@@ -285,7 +325,7 @@ export class AbandonedCartService implements OnApplicationBootstrap {
             const emailHash = email ? createHash('sha256').update(email).digest('hex') : null;
 
             const existing: any[] = await conn.query(
-                `SELECT id, status, notificationSent FROM abandoned_cart WHERE sessionId = ? LIMIT 1`,
+                `SELECT id, status, \`notificationSent\` FROM abandoned_cart WHERE \`sessionId\` = ? LIMIT 1`,
                 [c.sessionId],
             );
             // Dwell = last activity − first activity, in seconds.
@@ -301,23 +341,23 @@ export class AbandonedCartService implements OnApplicationBootstrap {
                 if (existing[0].status !== 'abandoned') continue;
                 await conn.query(
                     `UPDATE abandoned_cart SET
-                        totalMinor = ?, itemCount = ?, itemsJson = ?,
+                        \`totalMinor\` = ?, \`itemCount\` = ?, \`itemsJson\` = ?,
                         email = COALESCE(?, email),
-                        emailHash = COALESCE(?, emailHash),
-                        lastSnapshotAt = ?, lastKnownUrl = ?,
-                        countryCode = COALESCE(?, countryCode),
-                        regionCode = COALESCE(?, regionCode),
+                        \`emailHash\` = COALESCE(?, \`emailHash\`),
+                        \`lastSnapshotAt\` = ?, \`lastKnownUrl\` = ?,
+                        \`countryCode\` = COALESCE(?, \`countryCode\`),
+                        \`regionCode\` = COALESCE(?, \`regionCode\`),
                         ip = COALESCE(?, ip),
-                        ipHash = COALESCE(?, ipHash),
-                        userAgent = COALESCE(?, userAgent),
+                        \`ipHash\` = COALESCE(?, \`ipHash\`),
+                        \`userAgent\` = COALESCE(?, \`userAgent\`),
                         browser = COALESCE(?, browser),
-                        deviceType = COALESCE(?, deviceType),
-                        pageViews = ?,
-                        dwellSeconds = ?,
-                        firstName = COALESCE(?, firstName),
-                        lastName = COALESCE(?, lastName),
+                        \`deviceType\` = COALESCE(?, \`deviceType\`),
+                        \`pageViews\` = ?,
+                        \`dwellSeconds\` = ?,
+                        \`firstName\` = COALESCE(?, \`firstName\`),
+                        \`lastName\` = COALESCE(?, \`lastName\`),
                         phone = COALESCE(?, phone),
-                        updatedAt = NOW(3)
+                        \`updatedAt\` = NOW(3)
                      WHERE id = ?`,
                     [
                         totalMinor, itemCount, JSON.stringify(items),
@@ -338,24 +378,24 @@ export class AbandonedCartService implements OnApplicationBootstrap {
 
             await conn.query(
                 `INSERT INTO abandoned_cart (
-                    visitorId, sessionId, customerId, channelId,
-                    currency, totalMinor, itemCount, itemsJson,
-                    email, emailHash,
-                    firstSnapshotAt, lastSnapshotAt, abandonedAt,
-                    status, lastKnownUrl, lastKnownReferrer, landingUrl,
-                    utmSource, utmMedium, utmCampaign, countryCode,
-                    regionCode, city, ip, ipHash,
-                    userAgent, browser, deviceType,
-                    pageViews, dwellSeconds,
-                    firstName, lastName, phone,
-                    notificationSent, createdAt, updatedAt
+                    \`visitorId\`, \`sessionId\`, \`customerId\`, \`channelId\`,
+                    currency, \`totalMinor\`, \`itemCount\`, \`itemsJson\`,
+                    email, \`emailHash\`,
+                    \`firstSnapshotAt\`, \`lastSnapshotAt\`, \`abandonedAt\`,
+                    status, \`lastKnownUrl\`, \`lastKnownReferrer\`, \`landingUrl\`,
+                    \`utmSource\`, \`utmMedium\`, \`utmCampaign\`, \`countryCode\`,
+                    \`regionCode\`, city, ip, \`ipHash\`,
+                    \`userAgent\`, browser, \`deviceType\`,
+                    \`pageViews\`, \`dwellSeconds\`,
+                    \`firstName\`, \`lastName\`, phone,
+                    \`notificationSent\`, \`createdAt\`, \`updatedAt\`
                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), 'abandoned',
                            ?, ?, ?, ?, ?, ?, ?,
                            ?, ?, ?, ?,
                            ?, ?, ?,
                            ?, ?,
                            ?, ?, ?,
-                           0, NOW(3), NOW(3))`,
+                           FALSE, NOW(3), NOW(3))`,
                 [
                     c.visitorId, c.sessionId, c.customerId, c.channelId || 1,
                     (meta.currency || 'GBP').slice(0, 3), totalMinor, itemCount, JSON.stringify(items),
@@ -380,7 +420,7 @@ export class AbandonedCartService implements OnApplicationBootstrap {
                         currency: (meta.currency || 'GBP').slice(0, 3),
                     });
                     await conn.query(
-                        `UPDATE abandoned_cart SET notificationSent = 1 WHERE sessionId = ?`,
+                        `UPDATE abandoned_cart SET \`notificationSent\` = TRUE WHERE \`sessionId\` = ?`,
                         [c.sessionId],
                     );
                     slacked += 1;
@@ -418,8 +458,8 @@ export class AbandonedCartService implements OnApplicationBootstrap {
         if (!o.recoveryLinkSecret) return null;
         const conn = adapterFor(this.connection.rawConnection);
         const rows: any[] = await conn.query(
-            `SELECT ac.sessionId, ac.visitorId, ac.channelId, ac.recoveryStep, ch.code AS channelCode
-             FROM abandoned_cart ac LEFT JOIN channel ch ON ch.id = ac.channelId
+            `SELECT ac.\`sessionId\`, ac.\`visitorId\`, ac.\`channelId\`, ac.\`recoveryStep\`, ch.code AS \`channelCode\`
+             FROM abandoned_cart ac LEFT JOIN channel ch ON ch.id = ac.\`channelId\`
              WHERE ac.id = ? LIMIT 1`,
             [cartId],
         );
@@ -431,13 +471,13 @@ export class AbandonedCartService implements OnApplicationBootstrap {
             const code = options.resumeOrderCode === null ? null : sanitiseOrderCode(options.resumeOrderCode) || null;
             await conn.query(
                 `UPDATE abandoned_cart
-                 SET recoveryToken = ?, recoveryTokenExpiresAt = ?, resumeOrderCode = ?, recoveryStep = ?
+                 SET \`recoveryToken\` = ?, \`recoveryTokenExpiresAt\` = ?, \`resumeOrderCode\` = ?, \`recoveryStep\` = ?
                  WHERE id = ?`,
                 [token, expiresAt, code, step, cartId],
             );
         } else {
             await conn.query(
-                `UPDATE abandoned_cart SET recoveryToken = ?, recoveryTokenExpiresAt = ?, recoveryStep = ? WHERE id = ?`,
+                `UPDATE abandoned_cart SET \`recoveryToken\` = ?, \`recoveryTokenExpiresAt\` = ?, \`recoveryStep\` = ? WHERE id = ?`,
                 [token, expiresAt, step, cartId],
             );
         }
@@ -467,8 +507,8 @@ export class AbandonedCartService implements OnApplicationBootstrap {
         const t = String(token || '').trim();
         if (!t || t.length > 128) return null;
         const rows: any[] = await conn.query(
-            `SELECT id, currency, itemsJson, email, recoveryTokenExpiresAt, status, resumeOrderCode, recoveryStep, channelId
-             FROM abandoned_cart WHERE recoveryToken = ? LIMIT 1`,
+            `SELECT id, currency, \`itemsJson\`, email, \`recoveryTokenExpiresAt\`, status, \`resumeOrderCode\`, \`recoveryStep\`, \`channelId\`
+             FROM abandoned_cart WHERE \`recoveryToken\` = ? LIMIT 1`,
             [t],
         );
         if (!rows?.length) return null;
@@ -483,7 +523,7 @@ export class AbandonedCartService implements OnApplicationBootstrap {
         }
         const step = advanceRecoveryStep(r.recoveryStep, 'link_opened');
         if (step !== r.recoveryStep) {
-            await conn.query(`UPDATE abandoned_cart SET recoveryStep = ? WHERE id = ?`, [step, r.id]);
+            await conn.query(`UPDATE abandoned_cart SET \`recoveryStep\` = ? WHERE id = ?`, [step, r.id]);
         }
         return this.buildRecoveredCart(r);
     }
@@ -504,7 +544,7 @@ export class AbandonedCartService implements OnApplicationBootstrap {
         if (resumeOrderCode) {
             const conn = adapterFor(this.connection.rawConnection);
             await conn.query(
-                `UPDATE abandoned_cart SET recoveryStep = ? WHERE id = ? AND (recoveryStep IS NULL OR recoveryStep IN ('link_issued','link_opened'))`,
+                `UPDATE abandoned_cart SET \`recoveryStep\` = ? WHERE id = ? AND (\`recoveryStep\` IS NULL OR \`recoveryStep\` IN ('link_issued','link_opened'))`,
                 ['resumed', cart.id],
             );
         }
@@ -530,7 +570,7 @@ export class AbandonedCartService implements OnApplicationBootstrap {
         const code = sanitiseOrderCode(orderCode);
         if (!t || t.length > 128 || !code) return { ok: false, error: 'invalid-token' };
         const rows: any[] = await conn.query(
-            `SELECT id, status, convertedOrderCode FROM abandoned_cart WHERE recoveryToken = ? LIMIT 1`,
+            `SELECT id, status, \`convertedOrderCode\` FROM abandoned_cart WHERE \`recoveryToken\` = ? LIMIT 1`,
             [t],
         );
         if (!rows?.length) return { ok: false, error: 'invalid-token' };
@@ -546,12 +586,12 @@ export class AbandonedCartService implements OnApplicationBootstrap {
         await conn.query(
             `UPDATE abandoned_cart
              SET status = 'converted',
-                 recoveredAt = COALESCE(recoveredAt, NOW(3)),
-                 convertedAt = COALESCE(convertedAt, NOW(3)),
-                 convertedOrderId = ?,
-                 convertedOrderCode = ?,
-                 recoveryOrderId = COALESCE(recoveryOrderId, ?),
-                 recoveryStep = 'converted'
+                 \`recoveredAt\` = COALESCE(\`recoveredAt\`, NOW(3)),
+                 \`convertedAt\` = COALESCE(\`convertedAt\`, NOW(3)),
+                 \`convertedOrderId\` = ?,
+                 \`convertedOrderCode\` = ?,
+                 \`recoveryOrderId\` = COALESCE(\`recoveryOrderId\`, ?),
+                 \`recoveryStep\` = 'converted'
              WHERE id = ?`,
             [order.id, order.code, order.id, cart.id],
         );
@@ -659,14 +699,14 @@ export class AbandonedCartService implements OnApplicationBootstrap {
         const conn = adapterFor(this.connection.rawConnection);
         const rows: any[] = await conn.query(
             `SELECT
-                SUM(CASE WHEN recoveryStep IS NOT NULL THEN 1 ELSE 0 END) AS linkIssued,
-                SUM(CASE WHEN recoveryStep IN ('link_opened','resumed','converted') THEN 1 ELSE 0 END) AS linkOpened,
-                SUM(CASE WHEN recoveryStep IN ('resumed','converted') THEN 1 ELSE 0 END) AS resumed,
-                SUM(CASE WHEN recoveryStep = 'converted' THEN 1 ELSE 0 END) AS convertedViaLink,
-                SUM(CASE WHEN recoveryStep = 'converted' THEN totalMinor ELSE 0 END) AS convertedViaLinkValueMinor,
-                SUM(CASE WHEN status = 'converted' THEN 1 ELSE 0 END) AS convertedTotal
+                SUM(CASE WHEN \`recoveryStep\` IS NOT NULL THEN 1 ELSE 0 END) AS \`linkIssued\`,
+                SUM(CASE WHEN \`recoveryStep\` IN ('link_opened','resumed','converted') THEN 1 ELSE 0 END) AS \`linkOpened\`,
+                SUM(CASE WHEN \`recoveryStep\` IN ('resumed','converted') THEN 1 ELSE 0 END) AS resumed,
+                SUM(CASE WHEN \`recoveryStep\` = 'converted' THEN 1 ELSE 0 END) AS \`convertedViaLink\`,
+                SUM(CASE WHEN \`recoveryStep\` = 'converted' THEN \`totalMinor\` ELSE 0 END) AS \`convertedViaLinkValueMinor\`,
+                SUM(CASE WHEN status = 'converted' THEN 1 ELSE 0 END) AS \`convertedTotal\`
              FROM abandoned_cart
-             WHERE abandonedAt >= ?`,
+             WHERE \`abandonedAt\` >= ?`,
             [since],
         );
         let optOuts = 0;

@@ -30,15 +30,15 @@ export class JourneyBuffsService {
         const rows: any[] = await adapterFor(this.connection.rawConnection).query(
             `SELECT
                 url,
-                COUNT(*) AS rageClicks,
-                COUNT(DISTINCT visitorId) AS uniqueVisitors
+                COUNT(*) AS \`rageClicks\`,
+                COUNT(DISTINCT \`visitorId\`) AS \`uniqueVisitors\`
              FROM visitor_event
              WHERE type = 'event'
                AND meta LIKE '%"eventType":"rage_click"%'
-               AND channelId = ?
-               AND createdAt >= ?
+               AND \`channelId\` = ?
+               AND \`createdAt\` >= ?
              GROUP BY url
-             ORDER BY rageClicks DESC
+             ORDER BY \`rageClicks\` DESC
              LIMIT ?`,
             [channelId, since, Math.min(Math.max(1, limit), 200)],
         );
@@ -64,15 +64,15 @@ export class JourneyBuffsService {
         const rows: any[] = await adapterFor(this.connection.rawConnection).query(
             `SELECT
                 url,
-                COUNT(*) AS deadClicks,
-                COUNT(DISTINCT visitorId) AS uniqueVisitors
+                COUNT(*) AS \`deadClicks\`,
+                COUNT(DISTINCT \`visitorId\`) AS \`uniqueVisitors\`
              FROM visitor_event
              WHERE type = 'event'
                AND meta LIKE '%"eventType":"dead_click"%'
-               AND channelId = ?
-               AND createdAt >= ?
+               AND \`channelId\` = ?
+               AND \`createdAt\` >= ?
              GROUP BY url
-             ORDER BY deadClicks DESC
+             ORDER BY \`deadClicks\` DESC
              LIMIT ?`,
             [channelId, since, Math.min(Math.max(1, limit), 200)],
         );
@@ -101,18 +101,18 @@ export class JourneyBuffsService {
     }>> {
         const rows: any[] = await adapterFor(this.connection.rawConnection).query(
             `SELECT
-                sessionId,
-                MIN(createdAt) AS startedAt,
-                MAX(createdAt) AS endedAt,
-                COUNT(*) AS pageCount,
-                SUM(type = 'event' AND meta LIKE '%"eventType":"add_to_cart"%') > 0        AS addedToCart,
-                SUM(type = 'event' AND meta LIKE '%"eventType":"checkout_completed"%') > 0 AS checkedOut,
-                SUM(type = 'event' AND meta LIKE '%"eventType":"cart_snapshot"%') > 0      AS hadCartSnapshot,
-                SUM(type = 'event' AND meta LIKE '%"eventType":"rage_click"%') > 0         AS rageClicked
+                \`sessionId\`,
+                MIN(\`createdAt\`) AS \`startedAt\`,
+                MAX(\`createdAt\`) AS \`endedAt\`,
+                COUNT(*) AS \`pageCount\`,
+                MAX(CASE WHEN type = 'event' AND meta LIKE '%"eventType":"add_to_cart"%' THEN 1 ELSE 0 END) AS \`addedToCart\`,
+                MAX(CASE WHEN type = 'event' AND meta LIKE '%"eventType":"checkout_completed"%' THEN 1 ELSE 0 END) AS \`checkedOut\`,
+                MAX(CASE WHEN type = 'event' AND meta LIKE '%"eventType":"cart_snapshot"%' THEN 1 ELSE 0 END) AS \`hadCartSnapshot\`,
+                MAX(CASE WHEN type = 'event' AND meta LIKE '%"eventType":"rage_click"%' THEN 1 ELSE 0 END) AS \`rageClicked\`
              FROM visitor_event
-             WHERE visitorId = ?
-             GROUP BY sessionId
-             ORDER BY startedAt DESC
+             WHERE \`visitorId\` = ?
+             GROUP BY \`sessionId\`
+             ORDER BY \`startedAt\` DESC
              LIMIT ?`,
             [visitorId, Math.min(Math.max(1, limit), 200)],
         );

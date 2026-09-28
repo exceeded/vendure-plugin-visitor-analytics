@@ -1,9 +1,10 @@
 import { Controller, Get, Post, Query, Param, Req, Res, Body, OnApplicationBootstrap } from '@nestjs/common';
 import { Ctx, RequestContext, Allow, Permission } from '@vendure/core';
 import { Request, Response } from 'express';
-import { RateLimiter } from '@huloglobal/vendure-licence-sdk';
+import { RateLimiter, adapterFor } from '@huloglobal/vendure-licence-sdk';
 import { AbandonedCartService } from './abandoned-cart.service';
 import { getRealIp } from './proxy-headers';
+import { drained } from './visitor-tracking.controller';
 import { sanitiseOrderCode, verifyOptOutToken } from './recovery-tokens';
 
 /**
@@ -76,25 +77,25 @@ export class AbandonedCartController implements OnApplicationBootstrap {
             params.push(`%${email.toLowerCase()}%`);
         }
         const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
-        const conn = (this.service as any).connection.rawConnection;
+        const conn = adapterFor((this.service as any).connection.rawConnection);
         const [rows, totalRow] = await Promise.all([
             conn.query(
                 // itemsJson included so the list can render a preview of the
                 // first few item names alongside the count. Slightly heavier
                 // than the previous SELECT but capped by LIMIT and paginated,
                 // so the payload growth stays proportional to the page size.
-                `SELECT id, sessionId, visitorId, customerId, currency, totalMinor, itemCount,
-                        itemsJson, email, status, abandonedAt, recoveredAt, notificationSent,
-                        resumeOrderCode, recoveryStep, convertedAt, convertedOrderId, convertedOrderCode,
-                        utmSource, utmMedium, utmCampaign, countryCode, regionCode, city,
-                        ip, ipHash, userAgent, browser, deviceType,
-                        landingUrl, lastKnownUrl, lastKnownReferrer,
-                        pageViews, dwellSeconds,
-                        firstName, lastName, phone,
-                        firstSnapshotAt, lastSnapshotAt
+                `SELECT id, \`sessionId\`, \`visitorId\`, \`customerId\`, currency, \`totalMinor\`, \`itemCount\`,
+                        \`itemsJson\`, email, status, \`abandonedAt\`, \`recoveredAt\`, \`notificationSent\`,
+                        \`resumeOrderCode\`, \`recoveryStep\`, \`convertedAt\`, \`convertedOrderId\`, \`convertedOrderCode\`,
+                        \`utmSource\`, \`utmMedium\`, \`utmCampaign\`, \`countryCode\`, \`regionCode\`, city,
+                        ip, \`ipHash\`, \`userAgent\`, browser, \`deviceType\`,
+                        \`landingUrl\`, \`lastKnownUrl\`, \`lastKnownReferrer\`,
+                        \`pageViews\`, \`dwellSeconds\`,
+                        \`firstName\`, \`lastName\`, phone,
+                        \`firstSnapshotAt\`, \`lastSnapshotAt\`
                  FROM abandoned_cart
                  ${clause}
-                 ORDER BY abandonedAt DESC
+                 ORDER BY \`abandonedAt\` DESC
                  LIMIT ? OFFSET ?`,
                 [...params, take, skip],
             ),
@@ -143,20 +144,20 @@ export class AbandonedCartController implements OnApplicationBootstrap {
     async summary(@Ctx() ctx: RequestContext, @Query('days') daysRaw?: string) {
         const days = Math.min(Math.max(1, parseInt(daysRaw || '30', 10) || 30), 365);
         const since = new Date(Date.now() - days * 86400_000);
-        const conn = (this.service as any).connection.rawConnection;
+        const conn = adapterFor((this.service as any).connection.rawConnection);
         const rows: any[] = await conn.query(
             `SELECT
                 COUNT(*) AS total,
-                SUM(CASE WHEN status='abandoned' THEN 1 ELSE 0 END) AS openCount,
-                SUM(CASE WHEN status='recovered' THEN 1 ELSE 0 END) AS recoveredCount,
-                SUM(CASE WHEN status='converted' THEN 1 ELSE 0 END) AS convertedCount,
-                SUM(CASE WHEN status='expired' THEN 1 ELSE 0 END)   AS expiredCount,
-                SUM(CASE WHEN status='dismissed' THEN 1 ELSE 0 END) AS dismissedCount,
-                SUM(totalMinor) AS totalValueMinor,
-                SUM(CASE WHEN status IN ('recovered','converted') THEN totalMinor ELSE 0 END) AS recoveredValueMinor,
-                AVG(totalMinor) AS avgValueMinor
+                SUM(CASE WHEN status='abandoned' THEN 1 ELSE 0 END) AS \`openCount\`,
+                SUM(CASE WHEN status='recovered' THEN 1 ELSE 0 END) AS \`recoveredCount\`,
+                SUM(CASE WHEN status='converted' THEN 1 ELSE 0 END) AS \`convertedCount\`,
+                SUM(CASE WHEN status='expired' THEN 1 ELSE 0 END)   AS \`expiredCount\`,
+                SUM(CASE WHEN status='dismissed' THEN 1 ELSE 0 END) AS \`dismissedCount\`,
+                SUM(\`totalMinor\`) AS \`totalValueMinor\`,
+                SUM(CASE WHEN status IN ('recovered','converted') THEN \`totalMinor\` ELSE 0 END) AS \`recoveredValueMinor\`,
+                AVG(\`totalMinor\`) AS \`avgValueMinor\`
              FROM abandoned_cart
-             WHERE abandonedAt >= ?`,
+             WHERE \`abandonedAt\` >= ?`,
             [since],
         );
         const s = rows?.[0] || {};
@@ -184,16 +185,7 @@ export class AbandonedCartController implements OnApplicationBootstrap {
     async exportCsv(@Ctx() ctx: RequestContext, @Res() res: Response, @Query('days') daysRaw?: string) {
         const days = Math.min(Math.max(1, parseInt(daysRaw || '30', 10) || 30), 365);
         const since = new Date(Date.now() - days * 86400_000);
-        const conn = (this.service as any).connection.rawConnection;
-        const rows: any[] = await conn.query(
-            `SELECT id, sessionId, visitorId, customerId, currency, totalMinor, itemCount,
-                    email, status, abandonedAt, recoveredAt, utmSource, utmMedium, utmCampaign, countryCode
-             FROM abandoned_cart
-             WHERE abandonedAt >= ?
-             ORDER BY abandonedAt DESC
-             LIMIT 50000`,
-            [since],
-        );
+        const conn = adapterFor((this.service as any).connection.rawConnection);
         res.setHeader('content-type', 'text/csv; charset=utf-8');
         res.setHeader('content-disposition',
             `attachment; filename="abandoned-carts-${new Date().toISOString().slice(0,10)}.csv"`);
@@ -205,8 +197,30 @@ export class AbandonedCartController implements OnApplicationBootstrap {
         const cols = ['id','sessionId','visitorId','customerId','currency','totalMinor','itemCount',
                       'email','status','abandonedAt','recoveredAt','utmSource','utmMedium','utmCampaign','countryCode'];
         res.write(cols.join(',') + '\n');
-        for (const r of rows) {
-            res.write(cols.map(c => esc(r[c])).join(',') + '\n');
+        // Streamed in id-ordered chunks instead of materialising up to 50 000 rows.
+        const CHUNK = 5000;
+        const MAX_ROWS = 50_000;
+        let lastId = 0;
+        let written = 0;
+        while (written < MAX_ROWS) {
+            const rows: any[] = await conn.query(
+                `SELECT id, \`sessionId\`, \`visitorId\`, \`customerId\`, currency, \`totalMinor\`, \`itemCount\`,
+                        email, status, \`abandonedAt\`, \`recoveredAt\`, \`utmSource\`, \`utmMedium\`, \`utmCampaign\`, \`countryCode\`
+                 FROM abandoned_cart
+                 WHERE id > ? AND \`abandonedAt\` >= ?
+                 ORDER BY id
+                 LIMIT ?`,
+                [lastId, since, Math.min(CHUNK, MAX_ROWS - written)],
+            );
+            if (!rows.length) break;
+            let out = '';
+            for (const r of rows) {
+                out += cols.map(c => esc(r[c] instanceof Date ? r[c].toISOString() : r[c])).join(',') + '\n';
+            }
+            lastId = Number(rows[rows.length - 1].id);
+            written += rows.length;
+            if (!res.write(out)) await drained(res);
+            if (res.destroyed || res.writableEnded) return;
         }
         res.end();
     }
@@ -282,7 +296,7 @@ export class AbandonedCartController implements OnApplicationBootstrap {
     @Allow(Permission.ReadCustomer)
     async detail(@Ctx() ctx: RequestContext, @Param('id') idRaw: string) {
         const id = parseInt(idRaw, 10);
-        const conn = (this.service as any).connection.rawConnection;
+        const conn = adapterFor((this.service as any).connection.rawConnection);
         const rows: any[] = await conn.query(
             `SELECT * FROM abandoned_cart WHERE id = ? LIMIT 1`,
             [id],
@@ -316,7 +330,7 @@ export class AbandonedCartController implements OnApplicationBootstrap {
      */
     private async enrichItemsWithNames(items: any[]): Promise<any[]> {
         if (!Array.isArray(items) || !items.length) return items || [];
-        const conn = (this.service as any).connection.rawConnection;
+        const conn = adapterFor((this.service as any).connection.rawConnection);
         const variantIds = new Set<number>();
         const productIds = new Set<number>();
         for (const it of items) {
@@ -333,11 +347,11 @@ export class AbandonedCartController implements OnApplicationBootstrap {
                 const vids = Array.from(variantIds);
                 const ph = vids.map(() => '?').join(',');
                 const rows: any[] = await conn.query(
-                    `SELECT pv.id AS variantId, pv.productId AS productId, pvt.name AS name
+                    `SELECT pv.id AS \`variantId\`, pv.\`productId\` AS \`productId\`, pvt.name AS name
                      FROM product_variant pv
-                     LEFT JOIN product_variant_translation pvt ON pvt.baseId = pv.id
+                     LEFT JOIN product_variant_translation pvt ON pvt.\`baseId\` = pv.id
                      WHERE pv.id IN (${ph})
-                     ORDER BY pv.id, pvt.languageCode = 'en' DESC`,
+                     ORDER BY pv.id, pvt.\`languageCode\` = 'en' DESC`,
                     vids,
                 );
                 for (const row of rows) {
@@ -355,9 +369,9 @@ export class AbandonedCartController implements OnApplicationBootstrap {
                 const pids = Array.from(productIds);
                 const ph = pids.map(() => '?').join(',');
                 const rows: any[] = await conn.query(
-                    `SELECT baseId AS productId, name FROM product_translation
-                     WHERE baseId IN (${ph})
-                     ORDER BY baseId, languageCode = 'en' DESC`,
+                    `SELECT \`baseId\` AS \`productId\`, name FROM product_translation
+                     WHERE \`baseId\` IN (${ph})
+                     ORDER BY \`baseId\`, \`languageCode\` = 'en' DESC`,
                     pids,
                 );
                 for (const row of rows) {

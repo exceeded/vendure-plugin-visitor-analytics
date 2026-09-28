@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, OnApplicationBootstrap, OnModuleDestroy, Param, Post, Put, Req, Res, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, OnApplicationBootstrap, OnModuleDestroy, Options, Param, Post, Put, Req, Res, Query } from '@nestjs/common';
 import {
     applySecurityHeaders,
     isLicensed,
@@ -56,6 +56,15 @@ function requireAdmin(ctx: RequestContext, res: Response, perms: Permission[] = 
     return true;
 }
 
+/** Back-pressure for streamed responses: resolves on 'drain' or when the client goes away. */
+export function drained(res: Response): Promise<void> {
+    return new Promise<void>(resolve => {
+        const done = () => { res.off('drain', done); res.off('close', done); resolve(); };
+        res.once('drain', done);
+        res.once('close', done);
+    });
+}
+
 function clampInt(raw: any, fallback: number, min: number, max: number): number {
     const n = parseInt(String(raw ?? fallback), 10);
     if (isNaN(n)) return fallback;
@@ -96,7 +105,8 @@ function parseChannelId(raw: any): number | null {
  */
 function channelWhere(channelId: number | null, alias?: string): { sql: string; params: any[] } {
     if (channelId == null) return { sql: '', params: [] };
-    const col = alias ? `${alias}.channelId` : 'channelId';
+    // Backticked: `channelId` is a quoted camelCase column on Postgres.
+    const col = alias ? `${alias}.\`channelId\`` : '`channelId`';
     return { sql: `AND ${col} = ?`, params: [channelId] };
 }
 
@@ -285,13 +295,20 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         return this.purchaseClaim;
     }
 
+    /** CORS preflight for the beacon (a JSON `fetch` from another origin sends one). */
+    @Options('track')
+    trackPreflight(@Req() req: Request, @Res() res: Response) {
+        this.applyCors(req, res);
+        res.setHeader('Access-Control-Max-Age', '600');
+        return res.status(204).end();
+    }
+
     @Post('track')
-    async track(@Body() body: any, @Req() req: Request, @Res() res: Response) {
+    async track(@Ctx() ctx: RequestContext, @Body() body: any, @Req() req: Request, @Res() res: Response) {
         // Lenient CORS — analytics ingestion must work cross-origin from
         // both storefronts (and dev hosts) without complex config.
         this.applyCors(req, res);
         applySecurityHeaders(res);
-        if (req.method === 'OPTIONS') return res.status(204).end();
 
         if (this.rateLimited(req, res, 'track')) return;
 
@@ -359,7 +376,10 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         }
 
         const channelId = clampInt(body?.channelId, 1, 1, 2147483647);
-        const customerId = body?.customerId != null ? Number(body.customerId) || null : null;
+        // The customer comes from the Vendure session, never from the body: an
+        // anonymous beacon used to be able to file events under any customer id.
+        // The body value is honoured only when it matches the session's customer.
+        const customerId = await this.resolveCustomerId(ctx);
         const events = Array.isArray(body?.events) ? body.events.slice(0, 50) : [];
 
         const ip = realIp(req);
@@ -410,36 +430,36 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const channelId = parseChannelId((req.query as any).channelId);
         const w = channelWhere(channelId);
         const rows = await adapterFor(this.connection.rawConnection).query(
-            `SELECT DATE(createdAt) AS day,
-                    COUNT(DISTINCT visitorId) AS visitors,
-                    COUNT(DISTINCT sessionId) AS sessions,
+            `SELECT DATE(\`createdAt\`) AS day,
+                    COUNT(DISTINCT \`visitorId\`) AS visitors,
+                    COUNT(DISTINCT \`sessionId\`) AS sessions,
                     COUNT(*) AS events,
                     SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END) AS pageviews
              FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
-             GROUP BY DATE(createdAt)
+             WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+             GROUP BY DATE(\`createdAt\`)
              ORDER BY day`,
             [days, ...w.params],
         );
         const [{ totalVisitors, totalSessions, totalPageviews, avgTimeMs }] = await adapterFor(this.connection.rawConnection).query(
-            `SELECT COUNT(DISTINCT visitorId) AS totalVisitors,
-                    COUNT(DISTINCT sessionId) AS totalSessions,
-                    SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END)      AS totalPageviews,
-                    AVG(CASE WHEN type='unload' AND timeOnPageMs > 0 THEN timeOnPageMs END) AS avgTimeMs
+            `SELECT COUNT(DISTINCT \`visitorId\`) AS \`totalVisitors\`,
+                    COUNT(DISTINCT \`sessionId\`) AS \`totalSessions\`,
+                    SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END)      AS \`totalPageviews\`,
+                    AVG(CASE WHEN type='unload' AND \`timeOnPageMs\` > 0 THEN \`timeOnPageMs\` END) AS \`avgTimeMs\`
              FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}`,
+             WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}`,
             [days, ...w.params],
         );
         // Previous period of identical length, immediately prior —
         // powers the KPI delta chips ("+12% vs previous 30 days").
         const [prev] = await adapterFor(this.connection.rawConnection).query(
-            `SELECT COUNT(DISTINCT visitorId) AS totalVisitors,
-                    COUNT(DISTINCT sessionId) AS totalSessions,
-                    SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END)      AS totalPageviews,
-                    AVG(CASE WHEN type='unload' AND timeOnPageMs > 0 THEN timeOnPageMs END) AS avgTimeMs
+            `SELECT COUNT(DISTINCT \`visitorId\`) AS \`totalVisitors\`,
+                    COUNT(DISTINCT \`sessionId\`) AS \`totalSessions\`,
+                    SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END)      AS \`totalPageviews\`,
+                    AVG(CASE WHEN type='unload' AND \`timeOnPageMs\` > 0 THEN \`timeOnPageMs\` END) AS \`avgTimeMs\`
              FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
-               AND createdAt <  DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}`,
+             WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY)
+               AND \`createdAt\` <  DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}`,
             [days * 2, days, ...w.params],
         );
         return res.json({
@@ -480,23 +500,23 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
 
         const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT source, medium, COALESCE(MAX(campaign), '') AS campaign,
-                    COUNT(DISTINCT visitorId) AS visitors,
-                    COUNT(DISTINCT sessionId) AS sessions,
-                    SUM(reached_product) AS productViewers,
-                    SUM(reached_checkout) AS checkoutReached
+                    COUNT(DISTINCT \`visitorId\`) AS visitors,
+                    COUNT(DISTINCT \`sessionId\`) AS sessions,
+                    SUM(reached_product) AS \`productViewers\`,
+                    SUM(reached_checkout) AS \`checkoutReached\`
              FROM (
-                 SELECT visitorId, sessionId,
-                        COALESCE(utmSource, referrerDomain, '(direct)') AS source,
-                        COALESCE(utmMedium, IF(referrerDomain IS NOT NULL, 'referral', 'none')) AS medium,
-                        utmCampaign AS campaign,
+                 SELECT \`visitorId\`, \`sessionId\`,
+                        COALESCE(\`utmSource\`, \`referrerDomain\`, '(direct)') AS source,
+                        COALESCE(\`utmMedium\`, IF(\`referrerDomain\` IS NOT NULL, 'referral', 'none')) AS medium,
+                        \`utmCampaign\` AS campaign,
                         MAX(CASE WHEN url LIKE '/products/%' AND type='pageview' THEN 1 ELSE 0 END) AS reached_product,
                         MAX(CASE WHEN (url LIKE '%/checkout%' OR url LIKE '%cart%') AND type='pageview' THEN 1 ELSE 0 END) AS reached_checkout
                  FROM visitor_event
-                 WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
-                   GROUP BY visitorId, sessionId,
-                          COALESCE(utmSource, referrerDomain, '(direct)'),
-                          COALESCE(utmMedium, IF(referrerDomain IS NOT NULL, 'referral', 'none')),
-                          utmCampaign
+                 WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                   GROUP BY \`visitorId\`, \`sessionId\`,
+                          COALESCE(\`utmSource\`, \`referrerDomain\`, '(direct)'),
+                          COALESCE(\`utmMedium\`, IF(\`referrerDomain\` IS NOT NULL, 'referral', 'none')),
+                          \`utmCampaign\`
              ) by_session
              GROUP BY source, medium
              ORDER BY visitors DESC
@@ -506,10 +526,10 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const [{ total }] = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(*) AS total FROM (
                 SELECT DISTINCT
-                    COALESCE(utmSource, referrerDomain, '(direct)') AS source,
-                    COALESCE(utmMedium, IF(referrerDomain IS NOT NULL, 'referral', 'none')) AS medium
+                    COALESCE(\`utmSource\`, \`referrerDomain\`, '(direct)') AS source,
+                    COALESCE(\`utmMedium\`, IF(\`referrerDomain\` IS NOT NULL, 'referral', 'none')) AS medium
                 FROM visitor_event
-                WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
                    ) sources`,
             [days, ...w.params],
         );
@@ -540,10 +560,10 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
             `SELECT url,
                     MAX(title)               AS title,
                     COUNT(*)                 AS views,
-                    COUNT(DISTINCT visitorId) AS uniqueVisitors,
-                    AVG(NULLIF(timeOnPageMs, 0)) AS avgTimeMs
+                    COUNT(DISTINCT \`visitorId\`) AS \`uniqueVisitors\`,
+                    AVG(NULLIF(\`timeOnPageMs\`, 0)) AS \`avgTimeMs\`
              FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+             WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
                    AND type IN ('pageview', 'unload')
              GROUP BY url
              ORDER BY views DESC
@@ -552,7 +572,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         );
         const [{ total }] = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(DISTINCT url) AS total FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+             WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
                    AND type IN ('pageview', 'unload')`,
             [days, ...w.params],
         );
@@ -583,8 +603,8 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const result: any[] = [];
         for (const s of stages) {
             const [{ n }] = await adapterFor(this.connection.rawConnection).query(
-                `SELECT COUNT(DISTINCT visitorId) AS n FROM visitor_event
-                 WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                `SELECT COUNT(DISTINCT \`visitorId\`) AS n FROM visitor_event
+                 WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
                    AND type='pageview' AND (${s.where})`,
                 [days, ...w.params],
             );
@@ -608,10 +628,10 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                     MAX(title) AS title,
                     COUNT(*)   AS exits
              FROM (
-                 SELECT sessionId, url, title, createdAt,
-                        ROW_NUMBER() OVER (PARTITION BY sessionId ORDER BY createdAt DESC) AS rn
+                 SELECT \`sessionId\`, url, title, \`createdAt\`,
+                        ROW_NUMBER() OVER (PARTITION BY \`sessionId\` ORDER BY \`createdAt\` DESC) AS rn
                  FROM visitor_event
-                 WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                 WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
                    AND type='pageview'
              ) last_pages
              WHERE rn = 1
@@ -622,10 +642,10 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         );
         const [{ total }] = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(DISTINCT url) AS total FROM (
-                SELECT sessionId, url,
-                       ROW_NUMBER() OVER (PARTITION BY sessionId ORDER BY createdAt DESC) AS rn
+                SELECT \`sessionId\`, url,
+                       ROW_NUMBER() OVER (PARTITION BY \`sessionId\` ORDER BY \`createdAt\` DESC) AS rn
                 FROM visitor_event
-                WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
                    AND type='pageview'
              ) lp WHERE rn = 1`,
             [days, ...w.params],
@@ -652,10 +672,10 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT type,
                     COUNT(*) AS count,
-                    COUNT(DISTINCT visitorId) AS uniqueVisitors,
-                    COUNT(DISTINCT sessionId) AS sessions
+                    COUNT(DISTINCT \`visitorId\`) AS \`uniqueVisitors\`,
+                    COUNT(DISTINCT \`sessionId\`) AS sessions
              FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+             WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
                    AND type NOT IN ('pageview', 'unload')
              GROUP BY type
              ORDER BY count DESC
@@ -664,7 +684,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         );
         const [{ total }] = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(DISTINCT type) AS total FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+             WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
                    AND type NOT IN ('pageview', 'unload')`,
             [days, ...w.params],
         );
@@ -723,9 +743,9 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const channelId = parseChannelId((req.query as any).channelId);
         const w = channelWhere(channelId);
         const grouped = (col: string) => adapterFor(this.connection.rawConnection).query(
-            `SELECT ${col} AS label, COUNT(DISTINCT visitorId) AS visitors
+            `SELECT ${col} AS label, COUNT(DISTINCT \`visitorId\`) AS visitors
              FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+             WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
                AND ${col} IS NOT NULL AND ${col} <> ''
              GROUP BY ${col}
              ORDER BY visitors DESC
@@ -761,21 +781,29 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering
         res.flushHeaders?.();
 
+        // One query in flight at a time: a slow tick used to pile up behind
+        // itself every 5 s. A `: keepalive` comment every 15 s keeps proxies
+        // from closing an idle stream between data frames.
+        let inFlight = false;
+        let closed = false;
         const tick = async () => {
+            if (inFlight || closed) return;
+            inFlight = true;
             try {
                 const rows = await adapterFor(this.connection.rawConnection).query(
-                    `SELECT visitorId,
+                    `SELECT \`visitorId\`,
                             MAX(url) AS url,
                             MAX(country) AS country,
-                            TIMESTAMPDIFF(SECOND, MAX(createdAt), NOW()) AS secondsAgo
+                            TIMESTAMPDIFF(SECOND, MAX(\`createdAt\`), NOW()) AS \`secondsAgo\`
                      FROM visitor_event
-                     WHERE createdAt >= DATE_SUB(NOW(), INTERVAL 5 MINUTE) ${w.sql}
+                     WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL 5 MINUTE) ${w.sql}
                        AND type = 'pageview'
-                     GROUP BY visitorId
-                     ORDER BY MAX(createdAt) DESC
+                     GROUP BY \`visitorId\`
+                     ORDER BY MAX(\`createdAt\`) DESC
                      LIMIT 20`,
                     [...w.params],
                 );
+                if (closed) return;
                 const payload = {
                     ts: new Date().toISOString(),
                     activeCount: rows.length,
@@ -791,14 +819,18 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                 // Don't kill the stream on transient DB errors — the next
                 // tick will retry. SSE clients reconnect automatically
                 // if the connection drops.
+            } finally {
+                inFlight = false;
             }
         };
 
         // Fire immediately, then every 5s. Stop when the client disconnects.
         await tick();
         const interval = setInterval(() => { tick().catch(() => undefined); }, 5_000);
-        req.on('close', () => clearInterval(interval));
-        req.on('end',   () => clearInterval(interval));
+        const keepalive = setInterval(() => { if (!closed) res.write(': keepalive\n\n'); }, 15_000);
+        const stop = () => { closed = true; clearInterval(interval); clearInterval(keepalive); };
+        req.on('close', stop);
+        req.on('end', stop);
     }
 
     /** Journey timeline for one visitor — every event in order. */
@@ -824,11 +856,11 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const channelId = parseChannelId((req.query as any).channelId);
         const w = channelWhere(channelId);
         const rows = await adapterFor(this.connection.rawConnection).query(
-            `SELECT visitorId,
-                    MAX(customerId)            AS customerId,
-                    MIN(createdAt)             AS firstSeenAt,
-                    MAX(createdAt)             AS lastSeenAt,
-                    COUNT(DISTINCT sessionId)  AS sessions,
+            `SELECT \`visitorId\`,
+                    MAX(\`customerId\`)            AS \`customerId\`,
+                    MIN(\`createdAt\`)             AS \`firstSeenAt\`,
+                    MAX(\`createdAt\`)             AS \`lastSeenAt\`,
+                    COUNT(DISTINCT \`sessionId\`)  AS sessions,
                     SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END)       AS pageviews,
                     MAX(country)               AS country,
                     MAX(city)                  AS city,
@@ -836,15 +868,15 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                     MAX(os)                    AS os,
                     MAX(device)                AS device
              FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
-                   GROUP BY visitorId
-             ORDER BY MAX(createdAt) DESC
+             WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                   GROUP BY \`visitorId\`
+             ORDER BY MAX(\`createdAt\`) DESC
              LIMIT ? OFFSET ?`,
             [days, ...w.params, take, skip],
         );
         const [{ total }] = await adapterFor(this.connection.rawConnection).query(
-            `SELECT COUNT(DISTINCT visitorId) AS total
-             FROM visitor_event WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+            `SELECT COUNT(DISTINCT \`visitorId\`) AS total
+             FROM visitor_event WHERE \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
                    `,
             [days, ...w.params],
         );
@@ -877,48 +909,48 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
 
         // One row with the latest non-null value of every column.
         const [latest] = await adapterFor(this.connection.rawConnection).query(
-            `SELECT visitorId,
-                    MAX(customerId)         AS customerId,
-                    MIN(createdAt)          AS firstSeenAt,
-                    MAX(createdAt)          AS lastSeenAt,
-                    COUNT(DISTINCT sessionId) AS totalSessions,
-                    SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END)    AS totalPageviews,
-                    SUM(CASE WHEN type='unload' THEN 1 ELSE 0 END)      AS totalUnloads,
-                    SUM(CASE WHEN type='event' THEN 1 ELSE 0 END)       AS totalEvents,
-                    SUM(timeOnPageMs)       AS totalTimeMs,
+            `SELECT \`visitorId\`,
+                    MAX(\`customerId\`)         AS \`customerId\`,
+                    MIN(\`createdAt\`)          AS \`firstSeenAt\`,
+                    MAX(\`createdAt\`)          AS \`lastSeenAt\`,
+                    COUNT(DISTINCT \`sessionId\`) AS \`totalSessions\`,
+                    SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END)    AS \`totalPageviews\`,
+                    SUM(CASE WHEN type='unload' THEN 1 ELSE 0 END)      AS \`totalUnloads\`,
+                    SUM(CASE WHEN type='event' THEN 1 ELSE 0 END)       AS \`totalEvents\`,
+                    SUM(\`timeOnPageMs\`)       AS \`totalTimeMs\`,
                     MAX(ip)                 AS ip,
-                    MAX(ipHash)             AS ipHash,
-                    MAX(userAgent)          AS userAgent,
+                    MAX(\`ipHash\`)             AS \`ipHash\`,
+                    MAX(\`userAgent\`)          AS \`userAgent\`,
                     MAX(browser)            AS browser,
-                    MAX(browserVersion)     AS browserVersion,
+                    MAX(\`browserVersion\`)     AS \`browserVersion\`,
                     MAX(os)                 AS os,
-                    MAX(osVersion)          AS osVersion,
+                    MAX(\`osVersion\`)          AS \`osVersion\`,
                     MAX(device)             AS device,
-                    MAX(acceptLanguage)     AS acceptLanguage,
+                    MAX(\`acceptLanguage\`)     AS \`acceptLanguage\`,
                     MAX(country)            AS country,
                     MAX(region)             AS region,
                     MAX(city)               AS city,
                     MAX(timezone)           AS timezone,
-                    MAX(channelId)          AS channelId
+                    MAX(\`channelId\`)          AS \`channelId\`
              FROM visitor_event
-             WHERE visitorId = ?
-             GROUP BY visitorId`,
+             WHERE \`visitorId\` = ?
+             GROUP BY \`visitorId\``,
             [visitorId],
         );
         if (!latest) return res.status(404).json({ error: 'visitor not found' });
 
         const sessions = await adapterFor(this.connection.rawConnection).query(
-            `SELECT sessionId,
-                    MIN(createdAt) AS startedAt,
-                    MAX(createdAt) AS endedAt,
+            `SELECT \`sessionId\`,
+                    MIN(\`createdAt\`) AS \`startedAt\`,
+                    MAX(\`createdAt\`) AS \`endedAt\`,
                     COUNT(*)       AS events,
                     SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END) AS pageviews,
-                    SUM(timeOnPageMs)    AS timeMs,
-                    MIN(CASE WHEN type='pageview' THEN url END) AS entryUrl
+                    SUM(\`timeOnPageMs\`)    AS \`timeMs\`,
+                    MIN(CASE WHEN type='pageview' THEN url END) AS \`entryUrl\`
              FROM visitor_event
-             WHERE visitorId = ?
-             GROUP BY sessionId
-             ORDER BY MIN(createdAt) DESC
+             WHERE \`visitorId\` = ?
+             GROUP BY \`sessionId\`
+             ORDER BY MIN(\`createdAt\`) DESC
              LIMIT 50`,
             [visitorId],
         );
@@ -926,7 +958,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         let customer: any = null;
         if (latest.customerId) {
             const [c] = await adapterFor(this.connection.rawConnection).query(
-                `SELECT id, firstName, lastName, emailAddress
+                `SELECT id, \`firstName\`, \`lastName\`, \`emailAddress\`
                  FROM customer WHERE id = ? LIMIT 1`,
                 [Number(latest.customerId)],
             );
@@ -976,18 +1008,38 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
 
     // ------------------------------------------------------------------
 
+    /** userId → customerId, cached 10 min (bounded). Null when the request carries no session user. */
+    private customerByUser = new Map<string, { id: number | null; exp: number }>();
+    private async resolveCustomerId(ctx: RequestContext | undefined): Promise<number | null> {
+        const userId = ctx?.activeUserId;
+        if (!userId) return null;
+        const key = String(userId);
+        const now = Date.now();
+        const hit = this.customerByUser.get(key);
+        if (hit && hit.exp > now) return hit.id;
+        let id: number | null = null;
+        try {
+            const rows: any[] = await adapterFor(this.connection.rawConnection).query(
+                `SELECT id FROM customer WHERE \`userId\` = ? AND \`deletedAt\` IS NULL LIMIT 1`, [userId],
+            );
+            id = rows?.[0]?.id != null ? Number(rows[0].id) || null : null;
+        } catch { id = null; }
+        if (this.customerByUser.size > 5000) this.customerByUser.clear();
+        this.customerByUser.set(key, { id, exp: now + 10 * 60_000 });
+        return id;
+    }
+
     private applyCors(req: Request, res: Response) {
         const origin = String(req.headers.origin || '');
         const allowList = getOptions().corsAllowedOrigins || [];
-        // When an allowlist is configured we reflect only matching
-        // origins; otherwise we reflect any (legacy behaviour, looser).
-        let allow = origin || '*';
-        if (allowList.length) {
-            allow = allowList.includes(origin) ? origin : 'null';
-        }
-        res.setHeader('Access-Control-Allow-Origin', allow);
+        // When an allowlist is configured we reflect only matching origins;
+        // otherwise we reflect any (legacy behaviour, looser). A disallowed
+        // origin gets NO Allow-Origin header — `null` is itself a valid
+        // origin value (sandboxed iframes, file://) and would let it through.
         res.setHeader('Vary', 'Origin');
-        res.setHeader('Access-Control-Allow-Credentials', 'true');
+        if (allowList.length && !allowList.includes(origin)) return;
+        res.setHeader('Access-Control-Allow-Origin', origin || '*');
+        if (origin) res.setHeader('Access-Control-Allow-Credentials', 'true');
         res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'content-type');
     }
@@ -1104,15 +1156,15 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const days = Math.min(Math.max(parseInt(String((req.query as any).days || '30'), 10) || 30, 1), 365);
         const channelId = parseInt(String((req.query as any).channelId || '1'), 10) || 1;
         const rows = await adapterFor(this.connection.rawConnection).query(
-            `SELECT g.id, g.name, g.urlPattern, g.valueMinor, g.enabled,
-                    COUNT(DISTINCT v.visitorId) AS uniqueVisitors,
+            `SELECT g.id, g.name, g.\`urlPattern\`, g.\`valueMinor\`, g.enabled,
+                    COUNT(DISTINCT v.\`visitorId\`) AS \`uniqueVisitors\`,
                     COUNT(v.id) AS completions
              FROM conversion_goal g
              LEFT JOIN visitor_event v
-                ON v.goalId = g.id
-               AND v.createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
-               AND v.isBot = 0
-             WHERE g.channelId = ?
+                ON v.\`goalId\` = g.id
+               AND v.\`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY)
+               AND v.\`isBot\` = FALSE
+             WHERE g.\`channelId\` = ?
              GROUP BY g.id`,
             [days, channelId],
         );
@@ -1132,17 +1184,6 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const days = Math.min(Math.max(parseInt(String((req.query as any).days || '7'), 10) || 7, 1), 90);
         const channelId = parseChannelId((req.query as any).channelId);
         const w = channelWhere(channelId);
-        const rows = await adapterFor(this.connection.rawConnection).query(
-            `SELECT createdAt, visitorId, sessionId, customerId, channelId,
-                    type, url, title, referrerDomain,
-                    country, region, city, browser, os, device,
-                    isBot, goalId, utmSource, utmMedium, utmCampaign
-             FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
-                   ORDER BY createdAt DESC
-             LIMIT 200000`,
-            [days, ...w.params],
-        );
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="visitors-${new Date().toISOString().slice(0, 10)}.csv"`);
         const esc = (v: any): string => {
@@ -1153,15 +1194,40 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
             return /[",\n]/.test(s) ? `"${s}"` : s;
         };
         res.write('createdAt,visitorId,sessionId,customerId,channelId,type,url,title,referrerDomain,country,region,city,browser,os,device,isBot,goalId,utmSource,utmMedium,utmCampaign\n');
-        for (const r of rows) {
-            res.write([
-                esc(r.createdAt instanceof Date ? r.createdAt.toISOString() : r.createdAt),
-                esc(r.visitorId), esc(r.sessionId), esc(r.customerId), esc(r.channelId),
-                esc(r.type), esc(r.url), esc(r.title), esc(r.referrerDomain),
-                esc(r.country), esc(r.region), esc(r.city), esc(r.browser), esc(r.os), esc(r.device),
-                esc(r.isBot), esc(r.goalId),
-                esc(r.utmSource), esc(r.utmMedium), esc(r.utmCampaign),
-            ].join(',') + '\n');
+        // Streamed in id-ordered chunks: the export used to materialise up to
+        // 200 000 rows before writing the first byte.
+        const CHUNK = 5000;
+        const MAX_ROWS = 200_000;
+        let lastId = 0;
+        let written = 0;
+        while (written < MAX_ROWS) {
+            const rows: any[] = await adapterFor(this.connection.rawConnection).query(
+                `SELECT id, \`createdAt\`, \`visitorId\`, \`sessionId\`, \`customerId\`, \`channelId\`,
+                        type, url, title, \`referrerDomain\`,
+                        country, region, city, browser, os, device,
+                        \`isBot\`, \`goalId\`, \`utmSource\`, \`utmMedium\`, \`utmCampaign\`
+                 FROM visitor_event
+                 WHERE id > ? AND \`createdAt\` >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
+                 ORDER BY id
+                 LIMIT ?`,
+                [lastId, days, ...w.params, Math.min(CHUNK, MAX_ROWS - written)],
+            );
+            if (!rows.length) break;
+            let out = '';
+            for (const r of rows) {
+                out += [
+                    esc(r.createdAt instanceof Date ? r.createdAt.toISOString() : r.createdAt),
+                    esc(r.visitorId), esc(r.sessionId), esc(r.customerId), esc(r.channelId),
+                    esc(r.type), esc(r.url), esc(r.title), esc(r.referrerDomain),
+                    esc(r.country), esc(r.region), esc(r.city), esc(r.browser), esc(r.os), esc(r.device),
+                    esc(r.isBot === true ? 1 : r.isBot === false ? 0 : r.isBot), esc(r.goalId),
+                    esc(r.utmSource), esc(r.utmMedium), esc(r.utmCampaign),
+                ].join(',') + '\n';
+            }
+            lastId = Number(rows[rows.length - 1].id);
+            written += rows.length;
+            if (!res.write(out)) await drained(res);
+            if (res.destroyed || res.writableEnded) return;
         }
         return res.end();
     }

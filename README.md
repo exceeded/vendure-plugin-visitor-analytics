@@ -192,7 +192,11 @@ navigator.sendBeacon('/ees/track', body) ||
 
 ### Lightweight ingest
 
-- `POST /ees/track` accepts a batch of up to 50 events at once.
+- `POST /ees/track` accepts a batch of up to 50 events at once. The
+  `customerId` of a batch comes from the Vendure session of the request
+  (never from the body); `OPTIONS /ees/track` answers the CORS preflight.
+  With `corsAllowedOrigins` set, a request from any other origin gets no
+  `Access-Control-Allow-Origin` header.
 - Visitor + session cookies (`ees_vid`, `ees_sid`) issued + refreshed
   automatically. When `signingSecret` is set, cookies are HMAC-signed
   and tampered values are rejected — the visitor gets a fresh id.
@@ -307,10 +311,14 @@ address). Admin: `GET /ees/abandoned-carts/opt-outs`,
 customer request; `GET /ees/abandoned-carts/:id` reports `optedOut`.
 
 **Schema.** The 0.18.0 columns and the opt-out table are added at boot
-with `ADD COLUMN IF NOT EXISTS` / `CREATE TABLE IF NOT EXISTS` (MariaDB
-and PostgreSQL). Installs that run TypeORM migrations for plugins can
-generate one as usual — the `AbandonedCart` entity declares the same
-columns, so the generator finds nothing to add once the plugin has booted.
+(an information-schema check, then `ALTER TABLE … ADD COLUMN` /
+`CREATE TABLE IF NOT EXISTS` — MariaDB, MySQL 8 and PostgreSQL). Installs
+that run TypeORM migrations for plugins can generate one as usual — the
+`AbandonedCart` entity declares the same columns, so the generator finds
+nothing to add once the plugin has booted. Closed carts (expired /
+converted / dismissed) older than 180 days are pruned monthly on the
+worker; every raw statement in the plugin is checked against PostgreSQL
+17 by `tests/pg-corpus.test.ts`.
 
 **Slack notification.**
 `abandonment.slackWebhookUrl` + `abandonment.slackMinValueMinor`
@@ -340,8 +348,11 @@ Three endpoints, all safe from the storefront (no PII):
 | `GET /ees/recommendations/personal?visitorId=abc&limit=10` | homepage / cart recs for a returning visitor. Uses their last 10 `product_view` events over 30 days, excludes the seeds so the same product never appears |
 | `GET /ees/recommendations/trending?hours=24&limit=10` | homepage rail: most-viewed products in the window. Reflects real intent (not search-console clicks) |
 
-`GET /ees/recommendations/aggregate-now` (SuperAdmin only) forces a
-sweep — useful after a big backfill or spike.
+`GET /ees/recommendations/aggregate-now` (SuperAdmin only) runs the
+sweep now. It is idempotent: events up to the persisted end of the last
+sweep are not counted again, so it is safe to call after the 6-hourly
+cron. Add `?force=1` to rebuild regardless (e.g. after truncating
+`product_co_view`). Pairs not refreshed in 90 days are pruned monthly.
 
 ### Site search analytics (since 0.8.0)
 
@@ -381,7 +392,8 @@ time-on-page, country, browser, OS.
 ### CSV export
 
 `GET /ees/visitors/export.csv?days=N` (max 90 days) returns the raw
-events with full enrichment.
+events with full enrichment, streamed in id order (up to 200 000 rows);
+`GET /ees/abandoned-carts/export.csv?days=N` streams up to 50 000 carts.
 
 ## HTTP endpoints
 

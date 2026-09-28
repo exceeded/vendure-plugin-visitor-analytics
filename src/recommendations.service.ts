@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { TransactionalConnection } from '@vendure/core';
-import { adapterFor } from '@huloglobal/vendure-licence-sdk';
+import { adapterFor, LicenceStore } from '@huloglobal/vendure-licence-sdk';
+import { PRODUCT_CO_VIEW_CONFLICT, PRODUCT_ID_TOKEN, PRODUCT_ID_TOKEN_LOOSE, digitsOnly } from './sql-fragments';
 
 const loggerCtx = 'HuloRecommendationsService';
 
@@ -45,72 +46,145 @@ export interface RecommendedProduct {
 export class RecommendationsService {
     constructor(private connection: TransactionalConnection) {}
 
+    /** Persisted high-water mark of the last aggregated window (event time). */
+    private static readonly WATERMARK_KEY = 'visitor-analytics-coview-watermark';
+    private watermark: Date | null = null;
+    private aggregating = false;
+
+    private store() {
+        return new LicenceStore((sql, params) => adapterFor(this.connection.rawConnection).query(sql, params));
+    }
+
     /**
-     * Rebuild the co-view aggregate from `visitor_event`. Idempotent
-     * per (A, B, channelId) — repeated calls over the same window
-     * accumulate, so schedule this as a nightly cron with a rolling
-     * lookback (e.g. last 24h) rather than a full-history rescan.
+     * Rebuild the co-view aggregate from `visitor_event` for the window
+     * `[since, now)`. Idempotent for overlapping calls: the end of the last
+     * aggregated window is persisted, and a later call only counts events
+     * after it (`aggregate-now` after the 6-hourly cron therefore adds
+     * nothing instead of doubling every pair). `force: true` ignores the
+     * watermark (e.g. after truncating `product_co_view`).
      *
-     * Returns the number of pair-triples updated. Uses a bounded
-     * ordered-pair extractor (max 20 events per session) so a single
-     * bot session can't skew the table.
+     * Pairs are accumulated in memory per (A, B, channel) and written as
+     * multi-row upserts in chunks of 500 — the previous version issued one
+     * round trip per ordered pair, so a 20-product session cost 380 statements.
+     *
+     * Bounded to 20 events per session so a single bot session cannot skew
+     * the table.
      */
-    async aggregateCoViews(sinceHours = 24): Promise<{ pairs: number }> {
+    async aggregateCoViews(sinceHours = 24, opts: { force?: boolean } = {}): Promise<{ pairs: number; sessions: number; since: string; until: string; skipped: boolean }> {
         const conn = adapterFor(this.connection.rawConnection);
-        const since = new Date(Date.now() - sinceHours * 3600_000);
-        // Extract every session's product-view sequence within the
-        // window. Bounded to 20 events per session to keep pathological
-        // sessions from blowing up the table.
-        const sessions: any[] = await conn.query(
-            `SELECT
-                sessionId,
-                channelId,
-                GROUP_CONCAT(
-                    SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"productId":', -1), ',', 1)
-                    ORDER BY createdAt
-                    SEPARATOR ','
-                ) AS ids
-             FROM visitor_event
-             WHERE type = 'event'
-               AND meta LIKE '%"eventType":"product_view"%'
-               AND createdAt >= ?
-             GROUP BY sessionId, channelId
-             HAVING COUNT(*) BETWEEN 2 AND 20`,
-            [since],
-        );
+        const until = new Date();
+        let since = new Date(until.getTime() - sinceHours * 3600_000);
+        if (this.aggregating) return { pairs: 0, sessions: 0, since: since.toISOString(), until: until.toISOString(), skipped: true };
+        this.aggregating = true;
+        try {
+            if (!opts.force) {
+                const mark = await this.loadWatermark();
+                if (mark && mark > since) since = mark;
+            }
+            if (since >= until) return { pairs: 0, sessions: 0, since: since.toISOString(), until: until.toISOString(), skipped: true };
 
-        let pairs = 0;
-        for (const s of sessions) {
-            const rawIds: number[] = String(s.ids || '')
-                .split(',')
-                .map((x: string) => parseInt(x.replace(/[^0-9]/g, ''), 10))
-                .filter((n: number) => Number.isFinite(n) && n > 0);
-            if (rawIds.length < 2) continue;
-            const uniq = Array.from(new Set(rawIds));
-            if (uniq.length < 2) continue;
+            const sessions: any[] = await conn.query(
+                `SELECT
+                    \`sessionId\`,
+                    \`channelId\`,
+                    GROUP_CONCAT(
+                        ${PRODUCT_ID_TOKEN_LOOSE}
+                        ORDER BY \`createdAt\`
+                        SEPARATOR ','
+                    ) AS ids
+                 FROM visitor_event
+                 WHERE type = 'event'
+                   AND meta LIKE '%"eventType":"product_view"%'
+                   AND \`createdAt\` >= ?
+                   AND \`createdAt\` < ?
+                 GROUP BY \`sessionId\`, \`channelId\`
+                 HAVING COUNT(*) BETWEEN 2 AND 20`,
+                [since, until],
+            );
 
-            for (let i = 0; i < uniq.length; i++) {
-                for (let j = 0; j < uniq.length; j++) {
-                    if (i === j) continue;
-                    const a = uniq[i];
-                    const b = uniq[j];
-                    // Upsert-with-increment via ON DUPLICATE KEY UPDATE.
-                    await conn.query(
-                        `INSERT INTO product_co_view
-                           (productIdA, productIdB, channelId, viewsTogether, lastUpdated)
-                         VALUES (?, ?, ?, 1, NOW(3))
-                         ON DUPLICATE KEY UPDATE
-                           viewsTogether = viewsTogether + 1,
-                           lastUpdated = NOW(3)`,
-                        [a, b, s.channelId || 1],
-                        { conflictColumns: ['productIdA', 'productIdB', 'channelId'] },
-                    );
-                    pairs += 1;
+            // (a, b, channel) → co-view count for this window.
+            const counts = new Map<string, { a: number; b: number; ch: number; n: number }>();
+            for (const s of sessions) {
+                const rawIds: number[] = String(s.ids || '')
+                    .split(',')
+                    .map((x: string) => parseInt(x.replace(/[^0-9]/g, ''), 10))
+                    .filter((n: number) => Number.isFinite(n) && n > 0);
+                const uniq = Array.from(new Set(rawIds));
+                if (uniq.length < 2) continue;
+                const ch = Number(s.channelId) || 1;
+                for (const a of uniq) {
+                    for (const b of uniq) {
+                        if (a === b) continue;
+                        const key = `${a}|${b}|${ch}`;
+                        const hit = counts.get(key);
+                        if (hit) hit.n += 1; else counts.set(key, { a, b, ch, n: 1 });
+                    }
                 }
             }
+
+            const rows = Array.from(counts.values());
+            const CHUNK = 500;
+            for (let i = 0; i < rows.length; i += CHUNK) {
+                const chunk = rows.slice(i, i + CHUNK);
+                const valuesSql = chunk.map(() => '(?, ?, ?, ?, NOW(3))').join(', ');
+                await conn.query(
+                    `INSERT INTO product_co_view
+                       (\`productIdA\`, \`productIdB\`, \`channelId\`, \`viewsTogether\`, \`lastUpdated\`)
+                     VALUES ${valuesSql}
+                     ON DUPLICATE KEY UPDATE
+                       \`viewsTogether\` = product_co_view.\`viewsTogether\` + VALUES(\`viewsTogether\`),
+                       \`lastUpdated\` = NOW(3)`,
+                    chunk.flatMap(r => [r.a, r.b, r.ch, r.n]),
+                    { conflictColumns: PRODUCT_CO_VIEW_CONFLICT },
+                );
+            }
+            await this.saveWatermark(until);
+            Logger.log(`Co-view aggregation: ${sessions.length} sessions, ${rows.length} pair rows (${since.toISOString()} → ${until.toISOString()})`, loggerCtx);
+            return { pairs: rows.length, sessions: sessions.length, since: since.toISOString(), until: until.toISOString(), skipped: false };
+        } finally {
+            this.aggregating = false;
         }
-        Logger.log(`Co-view aggregation: ${sessions.length} sessions, ${pairs} pair updates`, loggerCtx);
-        return { pairs };
+    }
+
+    private async loadWatermark(): Promise<Date | null> {
+        if (this.watermark) return this.watermark;
+        try {
+            const store = this.store();
+            await store.ensureTable();
+            const raw = await store.load(RecommendationsService.WATERMARK_KEY);
+            const d = raw ? new Date(raw) : null;
+            this.watermark = d && Number.isFinite(d.getTime()) ? d : null;
+        } catch { this.watermark = null; }
+        return this.watermark;
+    }
+
+    private async saveWatermark(until: Date): Promise<void> {
+        this.watermark = until;
+        try { await this.store().save(RecommendationsService.WATERMARK_KEY, until.toISOString()); }
+        catch (e: any) { Logger.warn(`co-view watermark not persisted: ${e?.message}`, loggerCtx); }
+    }
+
+    /** Monthly housekeeping (worker): pairs not refreshed for `days` go in batches. */
+    async pruneStalePairs(days = 90, batch = 5000): Promise<number> {
+        const conn = adapterFor(this.connection.rawConnection);
+        let deleted = 0;
+        for (let round = 0; round < 400; round++) {
+            const rows: any[] = await conn.query(
+                `SELECT \`productIdA\`, \`productIdB\`, \`channelId\` FROM product_co_view
+                 WHERE \`lastUpdated\` < DATE_SUB(NOW(), INTERVAL ? DAY)
+                 ORDER BY \`productIdA\`, \`productIdB\`, \`channelId\` LIMIT ?`,
+                [days, batch],
+            );
+            if (!rows.length) break;
+            const tuples = rows.map(() => '(?, ?, ?)').join(', ');
+            await conn.query(
+                `DELETE FROM product_co_view WHERE (\`productIdA\`, \`productIdB\`, \`channelId\`) IN (${tuples})`,
+                rows.flatMap((r: any) => [Number(r.productIdA), Number(r.productIdB), Number(r.channelId)]),
+            );
+            deleted += rows.length;
+            if (rows.length < batch) break;
+        }
+        return deleted;
     }
 
     /**
@@ -119,10 +193,10 @@ export class RecommendationsService {
      */
     async alsoViewed(productId: number, channelId = 1, limit = 10): Promise<RecommendedProduct[]> {
         const rows: any[] = await adapterFor(this.connection.rawConnection).query(
-            `SELECT productIdB AS productId, viewsTogether AS score
+            `SELECT \`productIdB\` AS \`productId\`, \`viewsTogether\` AS score
              FROM product_co_view
-             WHERE productIdA = ? AND channelId = ?
-             ORDER BY viewsTogether DESC, lastUpdated DESC
+             WHERE \`productIdA\` = ? AND \`channelId\` = ?
+             ORDER BY \`viewsTogether\` DESC, \`lastUpdated\` DESC
              LIMIT ?`,
             [productId, channelId, Math.min(Math.max(1, limit), 50)],
         );
@@ -141,15 +215,18 @@ export class RecommendationsService {
      */
     async personalRecommendations(visitorId: string, channelId = 1, limit = 10): Promise<RecommendedProduct[]> {
         const conn = adapterFor(this.connection.rawConnection);
+        // No DISTINCT + ORDER BY on an unselected column (Postgres rejects it):
+        // group by the extracted id and order by the latest view instead.
         const seeds: any[] = await conn.query(
-            `SELECT DISTINCT
-                CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"productId":', -1), ',', 1) AS UNSIGNED) AS productId
+            `SELECT CAST(${PRODUCT_ID_TOKEN} AS UNSIGNED) AS \`productId\`, MAX(\`createdAt\`) AS \`lastSeen\`
              FROM visitor_event
-             WHERE visitorId = ?
+             WHERE \`visitorId\` = ?
                AND type = 'event'
                AND meta LIKE '%"eventType":"product_view"%'
-               AND createdAt >= (NOW() - INTERVAL 30 DAY)
-             ORDER BY createdAt DESC
+               AND \`createdAt\` >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+               AND ${digitsOnly(conn.dialect, PRODUCT_ID_TOKEN)}
+             GROUP BY CAST(${PRODUCT_ID_TOKEN} AS UNSIGNED)
+             ORDER BY \`lastSeen\` DESC
              LIMIT 10`,
             [visitorId],
         );
@@ -157,12 +234,12 @@ export class RecommendationsService {
         if (!seedIds.length) return [];
         const placeholders = seedIds.map(() => '?').join(',');
         const rows: any[] = await conn.query(
-            `SELECT productIdB AS productId, SUM(viewsTogether) AS score
+            `SELECT \`productIdB\` AS \`productId\`, SUM(\`viewsTogether\`) AS score
              FROM product_co_view
-             WHERE productIdA IN (${placeholders})
-               AND channelId = ?
-               AND productIdB NOT IN (${placeholders})
-             GROUP BY productIdB
+             WHERE \`productIdA\` IN (${placeholders})
+               AND \`channelId\` = ?
+               AND \`productIdB\` NOT IN (${placeholders})
+             GROUP BY \`productIdB\`
              ORDER BY score DESC
              LIMIT ?`,
             [...seedIds, channelId, ...seedIds, Math.min(Math.max(1, limit), 50)],
@@ -180,18 +257,22 @@ export class RecommendationsService {
      * reflects real interest, not just search-console clicks.
      */
     async trending(channelId = 1, sinceHours = 24, limit = 10): Promise<RecommendedProduct[]> {
+        const conn = adapterFor(this.connection.rawConnection);
         const since = new Date(Date.now() - sinceHours * 3600_000);
-        const rows: any[] = await adapterFor(this.connection.rawConnection).query(
+        // The digits guard keeps CAST from raising on Postgres; GROUP BY / HAVING repeat
+        // the expression because Postgres does not resolve output aliases in HAVING.
+        const rows: any[] = await conn.query(
             `SELECT
-                CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(meta, '"productId":', -1), ',', 1) AS UNSIGNED) AS productId,
+                CAST(${PRODUCT_ID_TOKEN} AS UNSIGNED) AS \`productId\`,
                 COUNT(*) AS views
              FROM visitor_event
              WHERE type = 'event'
                AND meta LIKE '%"eventType":"product_view"%'
-               AND channelId = ?
-               AND createdAt >= ?
-             GROUP BY productId
-             HAVING productId > 0
+               AND \`channelId\` = ?
+               AND \`createdAt\` >= ?
+               AND ${digitsOnly(conn.dialect, PRODUCT_ID_TOKEN)}
+             GROUP BY CAST(${PRODUCT_ID_TOKEN} AS UNSIGNED)
+             HAVING CAST(${PRODUCT_ID_TOKEN} AS UNSIGNED) > 0
              ORDER BY views DESC
              LIMIT ?`,
             [channelId, since, Math.min(Math.max(1, limit), 50)],
@@ -227,11 +308,11 @@ export class RecommendationsService {
             // multi-locale stores; single-locale installs will
             // naturally land on their only translation.
             const rows: any[] = await adapterFor(this.connection.rawConnection).query(
-                `SELECT pt.baseId AS productId, pt.name, pt.slug
+                `SELECT pt.\`baseId\` AS \`productId\`, pt.name, pt.slug
                  FROM product_translation pt
-                 JOIN product p ON p.id = pt.baseId AND p.deletedAt IS NULL
-                 WHERE pt.baseId IN (${placeholders})
-                 ORDER BY pt.baseId, pt.languageCode = 'en' DESC`,
+                 JOIN product p ON p.id = pt.\`baseId\` AND p.\`deletedAt\` IS NULL
+                 WHERE pt.\`baseId\` IN (${placeholders})
+                 ORDER BY pt.\`baseId\`, pt.\`languageCode\` = 'en' DESC`,
                 ids,
             );
             for (const r of rows) {

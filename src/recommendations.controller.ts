@@ -79,15 +79,17 @@ export class RecommendationsController {
     }
 
     /**
-     * Admin-only: manually kick the aggregation cron. Normally runs
-     * nightly, but this is useful for smoke-testing after a data
-     * backfill, or for pushing a big spike through immediately.
+     * Admin-only: run the aggregation now. Idempotent — events up to the
+     * persisted watermark of the last sweep are not counted again, so
+     * calling this right after the 6-hourly cron adds nothing (the
+     * response says `skipped: true`). `?force=1` ignores the watermark,
+     * e.g. after truncating `product_co_view`.
      */
     @Get('recommendations/aggregate-now')
     @Allow(Permission.SuperAdmin)
-    async aggregateNow(@Ctx() ctx: RequestContext, @Query('hours') hRaw?: string) {
+    async aggregateNow(@Ctx() ctx: RequestContext, @Query('hours') hRaw?: string, @Query('force') force?: string) {
         const hours = Math.min(Math.max(1, parseInt(hRaw || '24', 10) || 24), 24 * 30);
-        const result = await this.service.aggregateCoViews(hours);
+        const result = await this.service.aggregateCoViews(hours, { force: force === '1' || force === 'true' });
         return { ok: true, hours, ...result };
     }
 }
