@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boundedMeta, normaliseUrl } from './visitor-tracking.service';
+import { boundedMeta, normaliseUrl } from './ingest-utils';
 import { getRealIp } from './proxy-headers';
 
 describe('normaliseUrl', () => {

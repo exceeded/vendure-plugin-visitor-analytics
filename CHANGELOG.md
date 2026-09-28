@@ -5,6 +5,11 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.3] — 2026-09-28
+
+### Changed
+- `normaliseUrl` and `boundedMeta` moved to `src/ingest-utils.ts` (decorator-free, unit-tested). No behaviour change.
+
 ## [0.18.2] — 2026-09-28
 
 Reliability and security pass — no new features. Two indexes on
