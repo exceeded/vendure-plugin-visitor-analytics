@@ -4,19 +4,20 @@ import { getRealIp, getResolvedCountry, getResolvedRegion } from './proxy-header
 const req = (headers: Record<string, string>, ip?: string): any => ({ headers, ip });
 
 describe('getRealIp', () => {
-    it('prefers CF-Connecting-IP above everything', () => {
+    it('uses req.ip by default and ignores every proxy header (they are client-spoofable)', () => {
         expect(getRealIp(req({
             'cf-connecting-ip': '1.1.1.1', 'true-client-ip': '2.2.2.2',
             'x-real-ip': '3.3.3.3', 'x-forwarded-for': '4.4.4.4',
-        }, '5.5.5.5'))).toBe('1.1.1.1');
+        }, '5.5.5.5'))).toBe('5.5.5.5');
     });
-    it('falls through the precedence chain', () => {
-        expect(getRealIp(req({ 'true-client-ip': '2.2.2.2', 'x-real-ip': '3.3.3.3' }))).toBe('2.2.2.2');
-        expect(getRealIp(req({ 'x-real-ip': '3.3.3.3' }))).toBe('3.3.3.3');
-        expect(getRealIp(req({ 'x-forwarded-for': '4.4.4.4, 9.9.9.9' }))).toBe('4.4.4.4');
+    it('honours only the headers the host trusts, in the order given', () => {
+        const all = ['cf-connecting-ip', 'true-client-ip', 'x-real-ip', 'x-forwarded-for'] as const;
+        expect(getRealIp(req({ 'cf-connecting-ip': '1.1.1.1', 'x-real-ip': '3.3.3.3' }, '5.5.5.5'), [...all])).toBe('1.1.1.1');
+        expect(getRealIp(req({ 'true-client-ip': '2.2.2.2', 'x-real-ip': '3.3.3.3' }), [...all])).toBe('2.2.2.2');
+        expect(getRealIp(req({ 'x-forwarded-for': '4.4.4.4, 9.9.9.9' }), ['x-forwarded-for'])).toBe('4.4.4.4');
     });
-    it('uses the left-most XFF entry', () => {
-        expect(getRealIp(req({ 'x-forwarded-for': '  203.0.113.1 , 10.0.0.1 , 10.0.0.2 ' }))).toBe('203.0.113.1');
+    it('uses the left-most XFF entry when XFF is trusted', () => {
+        expect(getRealIp(req({ 'x-forwarded-for': '  203.0.113.1 , 10.0.0.1 , 10.0.0.2 ' }), ['x-forwarded-for'])).toBe('203.0.113.1');
     });
     it('falls back to req.ip then null', () => {
         expect(getRealIp(req({}, '5.5.5.5'))).toBe('5.5.5.5');

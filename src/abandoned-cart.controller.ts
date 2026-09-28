@@ -147,11 +147,11 @@ export class AbandonedCartController implements OnApplicationBootstrap {
         const rows: any[] = await conn.query(
             `SELECT
                 COUNT(*) AS total,
-                SUM(status = 'abandoned') AS openCount,
-                SUM(status = 'recovered') AS recoveredCount,
-                SUM(status = 'converted') AS convertedCount,
-                SUM(status = 'expired')   AS expiredCount,
-                SUM(status = 'dismissed') AS dismissedCount,
+                SUM(CASE WHEN status='abandoned' THEN 1 ELSE 0 END) AS openCount,
+                SUM(CASE WHEN status='recovered' THEN 1 ELSE 0 END) AS recoveredCount,
+                SUM(CASE WHEN status='converted' THEN 1 ELSE 0 END) AS convertedCount,
+                SUM(CASE WHEN status='expired' THEN 1 ELSE 0 END)   AS expiredCount,
+                SUM(CASE WHEN status='dismissed' THEN 1 ELSE 0 END) AS dismissedCount,
                 SUM(totalMinor) AS totalValueMinor,
                 SUM(CASE WHEN status IN ('recovered','converted') THEN totalMinor ELSE 0 END) AS recoveredValueMinor,
                 AVG(totalMinor) AS avgValueMinor
@@ -198,7 +198,8 @@ export class AbandonedCartController implements OnApplicationBootstrap {
         res.setHeader('content-disposition',
             `attachment; filename="abandoned-carts-${new Date().toISOString().slice(0,10)}.csv"`);
         const esc = (v: any) => {
-            const s = v == null ? '' : String(v);
+            let s = v == null ? '' : String(v);
+            if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // no formulas in Excel/Sheets
             return /[,"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
         };
         const cols = ['id','sessionId','visitorId','customerId','currency','totalMinor','itemCount',
@@ -220,10 +221,13 @@ export class AbandonedCartController implements OnApplicationBootstrap {
     @Get('abandoned-carts/opt-out')
     async optOutGet(@Req() req: Request, @Res() res: Response, @Query('e') tokenRaw?: string) {
         if (this.rateLimited(req, res, 'opt-out', 6)) return;
-        const result = await this.applyOptOut(req, tokenRaw);
+        // GET only shows a confirm button: mail clients and link scanners prefetch
+        // GETs and used to unsubscribe customers silently. The POST applies it.
         res.setHeader('cache-control', 'no-store');
         res.setHeader('content-type', 'text/html; charset=utf-8');
-        res.status(result.ok ? 200 : 400).send(this.optOutPage(result.ok));
+        const token = String(tokenRaw || '').replace(/[^A-Za-z0-9._~-]/g, '').slice(0, 512);
+        if (!token) return res.status(400).send(this.optOutPage(false));
+        res.status(200).send(this.optOutPage(true, `/ees/abandoned-carts/opt-out?e=${encodeURIComponent(token)}`));
     }
 
     @Post('abandoned-carts/opt-out')
@@ -244,9 +248,11 @@ export class AbandonedCartController implements OnApplicationBootstrap {
         return { ok: true };
     }
 
-    private optOutPage(ok: boolean): string {
-        const title = ok ? 'You have been unsubscribed' : 'This link is not valid';
-        const body = ok
+    private optOutPage(ok: boolean, confirmAction?: string): string {
+        const title = confirmAction ? 'Unsubscribe from basket reminders?' : ok ? 'You have been unsubscribed' : 'This link is not valid';
+        const body = confirmAction
+            ? `<form method="post" action="${confirmAction}"><button type="submit" style="background:#1b1f24;color:#fff;border:0;border-radius:8px;padding:12px 22px;font-size:15px;cursor:pointer">Yes, unsubscribe me</button></form>`
+            : ok
             ? 'We will not send you any more reminders about items left in your basket. You can close this page.'
             : 'The unsubscribe link is incomplete or has been altered. Please use the link exactly as it appears in the email.';
         return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">`

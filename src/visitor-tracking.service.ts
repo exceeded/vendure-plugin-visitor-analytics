@@ -90,7 +90,7 @@ export class VisitorTrackingService {
                 customerId: input.customerId,
                 channelId: input.channelId,
                 type: String(e.type || 'pageview').slice(0, 32),
-                url: (e.url || '').slice(0, 2048),
+                url: normaliseUrl(e.url),
                 title: e.title ? String(e.title).slice(0, 500) : null,
                 referrer: e.referrer ? String(e.referrer).slice(0, 2048) : null,
                 referrerDomain: extractReferrerDomain(e.referrer),
@@ -98,19 +98,20 @@ export class VisitorTrackingService {
                     ? Math.min(e.timeOnPageMs, 60 * 60_000)
                     : null,
                 ...enriched,
-                meta: e.meta ? JSON.stringify(e.meta).slice(0, 4000) : null,
-                utmSource: utm.source,
-                utmMedium: utm.medium,
-                utmCampaign: utm.campaign,
-                utmTerm: utm.term,
-                utmContent: utm.content,
+                meta: e.meta ? boundedMeta(e.meta) : null,
+                utmSource: utm.source ? utm.source.slice(0, 100) : null,
+                utmMedium: utm.medium ? utm.medium.slice(0, 100) : null,
+                utmCampaign: utm.campaign ? utm.campaign.slice(0, 200) : null,
+                utmTerm: utm.term ? utm.term.slice(0, 100) : null,
+                utmContent: utm.content ? utm.content.slice(0, 200) : null,
                 isBot,
                 goalId: matchingGoal ? (Number(matchingGoal.id) || null) : null,
             });
         });
 
         try {
-            await repo.save(rows);
+            // insert(): no transaction + reload round trip for a fire-and-forget beacon.
+            await repo.insert(rows);
         } catch (err: any) {
             Logger.warn(`ingest failed: ${err?.message}`, loggerCtx);
             return { stored: 0 };
@@ -205,11 +206,35 @@ export class VisitorTrackingService {
     }
 
     private hashIp(ip: string): string {
-        const salt = process.env.VISITOR_IP_SALT || 'ees-visitor-static-salt';
+        // A public constant salt makes a 32-hex hash of an IPv4 reversible offline: prefer any configured secret.
+        const opts = getOptions();
+        const salt = process.env.VISITOR_IP_SALT || opts.signingSecret || opts.abandonment?.recoveryLinkSecret || 'ees-visitor-static-salt';
         return createHash('sha256').update(salt + '|' + ip).digest('hex').slice(0, 32);
     }
 
     newId(): string { return randomUUID().replace(/-/g, ''); }
+}
+
+/** hulo.js sends `location.href`; reports, funnels and goals expect a path (`/products/x?y=1`). */
+export function normaliseUrl(raw: unknown): string {
+    const u = String(raw || '');
+    if (/^https?:\/\//i.test(u)) {
+        try { const p = new URL(u); return (p.pathname + p.search).slice(0, 2048); } catch { return u.slice(0, 2048); }
+    }
+    return u.slice(0, 2048);
+}
+
+/** JSON for the `meta` TEXT column: never cut mid-document (a truncated cart snapshot is unparseable). */
+export function boundedMeta(meta: any, max = 60_000): string {
+    let s = JSON.stringify(meta);
+    if (s.length <= max) return s;
+    if (meta && typeof meta === 'object' && Array.isArray(meta.items)) {
+        for (let n = 50; n >= 5; n = Math.floor(n / 2)) {
+            s = JSON.stringify({ ...meta, items: meta.items.slice(0, n), itemsTruncated: true });
+            if (s.length <= max) return s;
+        }
+    }
+    return JSON.stringify({ truncated: true, type: meta?.eventType || meta?.type || null });
 }
 
 function isBot(ua: string): boolean {

@@ -19,24 +19,23 @@ import { Request } from 'express';
  * isn't available — the caller should treat this as "unknown" and
  * skip IP-dependent enrichment rather than fail.
  */
-export function getRealIp(req: Request): string | null {
+export type TrustedIpHeader = 'cf-connecting-ip' | 'true-client-ip' | 'x-real-ip' | 'x-forwarded-for';
+
+/**
+ * The visitor's IP: Express's `req.ip` (honours the host's `trust proxy`)
+ * unless the host lists proxy headers it trusts. Trusting a header from any
+ * peer lets a client spoof its address (rate limiter, stored IPs).
+ */
+export function getRealIp(req: Request, trusted: TrustedIpHeader[] = []): string | null {
     const headers = req.headers || {};
-    const cfIp = String(headers['cf-connecting-ip'] || '').trim();
-    if (cfIp) return cfIp;
-
-    const trueClient = String(headers['true-client-ip'] || '').trim();
-    if (trueClient) return trueClient;
-
-    const realIp = String(headers['x-real-ip'] || '').trim();
-    if (realIp) return realIp;
-
-    const xff = String(headers['x-forwarded-for'] || '').trim();
-    if (xff) {
-        const first = xff.split(',')[0]?.trim();
-        if (first) return first;
+    for (const name of trusted) {
+        const raw = String(headers[name] || '').trim();
+        if (!raw) continue;
+        const value = name === 'x-forwarded-for' ? raw.split(',')[0]?.trim() : raw;
+        if (value) return value.replace(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i, '$1').slice(0, 64);
     }
-
-    return (req as any).ip || null;
+    const ip = String((req as any).ip || '').trim();
+    return ip ? ip.replace(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i, '$1').slice(0, 64) : null;
 }
 
 /**

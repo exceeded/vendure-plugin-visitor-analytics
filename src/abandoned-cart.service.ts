@@ -175,7 +175,16 @@ export class AbandonedCartService implements OnApplicationBootstrap {
      * row as `converted` when a matching `checkout_completed` is seen.
      * Fires the Slack notification for fresh rows above the threshold.
      */
+    private scanning = false;
+
     async scan(): Promise<{ opened: number; converted: number; slacked: number }> {
+        // The 5-minute tick must not start a second pass while one is still running.
+        if (this.scanning) return { opened: 0, converted: 0, slacked: 0 };
+        this.scanning = true;
+        try { return await this.scanOnce(); } finally { this.scanning = false; }
+    }
+
+    private async scanOnce(): Promise<{ opened: number; converted: number; slacked: number }> {
         const o = this.opts();
         const conn = adapterFor(this.connection.rawConnection);
         const cutoff = new Date(Date.now() - o.windowMinutes * 60_000);
@@ -218,10 +227,10 @@ export class AbandonedCartService implements OnApplicationBootstrap {
                 -- would be cleaner but MariaDB 10.2+ has FIRST_VALUE via
                 -- SUBSTRING_INDEX(GROUP_CONCAT()) — same trick we use for
                 -- lastMeta below).
-                SUBSTRING_INDEX(GROUP_CONCAT(ve.url ORDER BY ve.createdAt ASC SEPARATOR ''), '', 1) AS firstUrl,
-                MAX(ve.url) AS lastUrl,
-                SUBSTRING_INDEX(GROUP_CONCAT(ve.referrer ORDER BY ve.createdAt ASC SEPARATOR ''), '', 1) AS firstReferrer,
-                MAX(ve.referrer) AS lastReferrer,
+                SUBSTRING_INDEX(GROUP_CONCAT(ve.url ORDER BY ve.createdAt ASC SEPARATOR '¦'), '¦', 1) AS firstUrl,
+                SUBSTRING_INDEX(GROUP_CONCAT(ve.url ORDER BY ve.createdAt DESC SEPARATOR '¦'), '¦', 1) AS lastUrl,
+                SUBSTRING_INDEX(GROUP_CONCAT(ve.referrer ORDER BY ve.createdAt ASC SEPARATOR '¦'), '¦', 1) AS firstReferrer,
+                SUBSTRING_INDEX(GROUP_CONCAT(ve.referrer ORDER BY ve.createdAt DESC SEPARATOR '¦'), '¦', 1) AS lastReferrer,
                 MAX(ve.utmSource) AS utmSource,
                 MAX(ve.utmMedium) AS utmMedium,
                 MAX(ve.utmCampaign) AS utmCampaign,
@@ -770,6 +779,7 @@ export class AbandonedCartService implements OnApplicationBootstrap {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ text: parts.join('\n') }),
+            signal: AbortSignal.timeout(8_000),
         });
     }
 

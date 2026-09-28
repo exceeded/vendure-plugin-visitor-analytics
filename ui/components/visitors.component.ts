@@ -972,6 +972,7 @@ interface VisitorProfile {
     `],
 })
 export class VisitorsComponent implements OnInit, OnDestroy {
+    private restartTimer: any = null;
     loading = false;
     days = 30;
 
@@ -1255,7 +1256,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
             this.cdr.markForCheck();
             return;
         }
-        setTimeout(() => {
+        this.restartTimer = setTimeout(() => {
             this.http.get<any>('/ees/licence/status').subscribe({
                 next: m => {
                     const v = m?.version || m?.update?.current;
@@ -1278,7 +1279,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     cmdCopied = false;
 
     copyUpdateCmd() {
-        const cmd = `npm install &#64;huloglobal/vendure-plugin-visitor-analytics@${this.licMeta?.update?.latest || 'latest'}`;
+        const cmd = `npm install @huloglobal/vendure-plugin-visitor-analytics@${this.licMeta?.update?.latest || 'latest'}`;
         navigator.clipboard?.writeText(cmd).then(() => {
             this.cmdCopied = true;
             this.cdr.markForCheck();
@@ -1382,7 +1383,6 @@ export class VisitorsComponent implements OnInit, OnDestroy {
         this.loadChannels();
         this.loadAll();
         this.connectLive();
-        this.loadStatus();
     }
 
     loadStatus() {
@@ -1407,6 +1407,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     }
 
     ngOnDestroy() {
+        clearTimeout(this.restartTimer);
         this.stopClaimPoll();
         this.disconnectLive();
     }

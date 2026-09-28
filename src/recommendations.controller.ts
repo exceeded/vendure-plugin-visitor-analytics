@@ -10,6 +10,8 @@ import { RecommendationsService } from './recommendations.service';
  * scores, no PII. Restricting them to Vendure admin would break the
  * primary use case (rendering a recs rail on the product page).
  */
+const TRENDING_CACHE = new Map<string, { items: any[]; exp: number }>();
+
 @Controller('ees')
 export class RecommendationsController {
     constructor(private readonly service: RecommendationsService) {}
@@ -64,9 +66,15 @@ export class RecommendationsController {
         @Query('limit')     lRaw?: string,
     ) {
         const channelId = parseInt(chRaw || '1', 10) || 1;
-        const hours = Math.min(Math.max(1, parseInt(hRaw || '24', 10) || 24), 24 * 30);
-        const limit = parseInt(lRaw || '10', 10) || 10;
+        // Public and uncached before: a GROUP BY over a month of events per call. Cap the window and memoise for a minute.
+        const hours = Math.min(Math.max(1, parseInt(hRaw || '24', 10) || 24), 24 * 7);
+        const limit = Math.min(Math.max(1, parseInt(lRaw || '10', 10) || 10), 50);
+        const key = `${channelId}|${hours}|${limit}`;
+        const hit = TRENDING_CACHE.get(key);
+        if (hit && hit.exp > Date.now()) return { channelId, hours, items: hit.items };
         const items = await this.service.trending(channelId, hours, limit);
+        if (TRENDING_CACHE.size > 200) TRENDING_CACHE.clear();
+        TRENDING_CACHE.set(key, { items, exp: Date.now() + 60_000 });
         return { channelId, hours, items };
     }
 

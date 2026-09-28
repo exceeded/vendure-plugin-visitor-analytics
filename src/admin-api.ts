@@ -110,25 +110,25 @@ export class VisitorAnalyticsAdminResolver {
         const totals = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(DISTINCT visitorId) AS visitors,
                     COUNT(DISTINCT sessionId) AS sessions,
-                    SUM(type = 'pageview') AS pageViews,
+                    SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END) AS pageViews,
                     COUNT(*) AS events
              FROM visitor_event
              WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)${c.where}`,
             [days, ...c.params],
         );
         const t = (totals as any[])[0] || {};
-        const sessionRows = await adapterFor(this.connection.rawConnection).query(
-            `SELECT sessionId,
-                    TIMESTAMPDIFF(SECOND, MIN(createdAt), MAX(createdAt)) AS dur,
-                    COUNT(*) AS n
-             FROM visitor_event
-             WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)${c.where}
-             GROUP BY sessionId`,
+        // Aggregate in SQL: the old version pulled every session row of the range into Node.
+        const [agg] = await adapterFor(this.connection.rawConnection).query(
+            `SELECT COUNT(*) AS sessions, SUM(CASE WHEN n <= 1 THEN 1 ELSE 0 END) AS bounces, AVG(dur) AS avgDur
+             FROM (SELECT sessionId, COUNT(*) AS n, TIMESTAMPDIFF(SECOND, MIN(createdAt), MAX(createdAt)) AS dur
+                     FROM visitor_event
+                    WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)${c.where}
+                    GROUP BY sessionId) s`,
             [days, ...c.params],
-        );
-        const ssRows = sessionRows as any[];
-        const bounces = ssRows.filter((s: any) => Number(s.n) <= 1).length;
-        const avg = ssRows.length ? ssRows.reduce((a: number, s: any) => a + Number(s.dur || 0), 0) / ssRows.length : 0;
+        ) as any[];
+        const ssRows = { length: Number(agg?.sessions) || 0 };
+        const bounces = Number(agg?.bounces) || 0;
+        const avg = Number(agg?.avgDur) || 0;
         return {
             days, channelId: channelId || null,
             visitors: Number(t.visitors) || 0,

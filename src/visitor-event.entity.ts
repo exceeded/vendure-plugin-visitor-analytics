@@ -21,6 +21,8 @@ import { Column, Entity, Index } from 'typeorm';
  * analysis work.
  */
 @Entity()
+@Index('visitor_event_created_idx', ['createdAt'])
+@Index('visitor_event_channel_created_idx', ['channelId', 'createdAt'])
 @Index('visitor_event_visitor_idx', ['visitorId', 'createdAt'])
 @Index('visitor_event_session_idx', ['sessionId', 'createdAt'])
 @Index('visitor_event_customer_idx', ['customerId'])

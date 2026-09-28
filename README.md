@@ -76,6 +76,12 @@ export const config: VendureConfig = {
 Add `VisitorAnalyticsPlugin.uiExtensions` to your `compileUiExtensions`
 config to pick up the Abandoned Carts + Analytics Insights admin pages.
 
+
+> **Since 0.18.2:** events are pruned after 400 days by default
+> (`retention`); the visitor IP is `req.ip` unless you list proxy headers in
+> `trustedIpHeaders`; `hulo.js` carries first-party visitor/session ids so
+> cross-origin storefronts count uniques correctly.
+
 ## Storefront helpers
 
 The plugin ships a **drop-in JS helper** at `/ees/hulo.js` — one script

@@ -7,7 +7,7 @@ import {
     signValue,
     startRetentionSweeper,
     verifySignedValue, LicenceStore, performSelfUpdate, selfUpdateEnv, adapterFor, PurchaseClaimClient, evalInstanceId, describeLicence } from '@huloglobal/vendure-licence-sdk';
-import { Ctx, Permission, RequestContext, TransactionalConnection } from '@vendure/core';
+import { Ctx, Permission, ProcessContext, RequestContext, TransactionalConnection } from '@vendure/core';
 import { Request, Response } from 'express';
 import { ConversionGoal } from './conversion-goal.entity';
 import { VisitorAnalyticsPlugin, getOptions } from './plugin';
@@ -44,12 +44,12 @@ const freeTierBudget = (() => {
     };
 })();
 
-function requireAdmin(ctx: RequestContext, res: Response): boolean {
+function requireAdmin(ctx: RequestContext, res: Response, perms: Permission[] = [Permission.ReadCustomer]): boolean {
     if (!ctx?.activeUserId) {
         res.status(401).json({ error: 'Authentication required' });
         return false;
     }
-    if (!ctx.userHasPermissions([Permission.ReadCustomer])) {
+    if (!ctx.userHasPermissions(perms)) {
         res.status(403).json({ error: 'Insufficient permissions' });
         return false;
     }
@@ -103,7 +103,7 @@ function channelWhere(channelId: number | null, alias?: string): { sql: string; 
 import { getRealIp, getResolvedCountry, getResolvedRegion } from './proxy-headers';
 
 const PLUGIN_ID_FOR_STORE = 'vendure-plugin-visitor-analytics';
-function realIp(req: Request): string | null { return getRealIp(req); }
+function realIp(req: Request): string | null { return getRealIp(req, getOptions().trustedIpHeaders || []); }
 
 @Controller('ees')
 export class VisitorTrackingController implements OnApplicationBootstrap, OnModuleDestroy {
@@ -113,6 +113,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
     constructor(
         private connection: TransactionalConnection,
         private tracking: VisitorTrackingService,
+        private processContext: ProcessContext,
     ) {}
 
     onApplicationBootstrap(): void {
@@ -120,11 +121,13 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const opts = getOptions();
         const rl = opts.rateLimit || { capacity: 240, windowMs: 60_000 };
         this.limiter = new RateLimiter({ capacity: rl.capacity, windowMs: rl.windowMs });
-        if (opts.retention) {
+        const retention = opts.retention === false ? null : (opts.retention || { days: 400 });
+        if (retention && !this.processContext.isServer) {
+            // Worker only: the sweeper used to run in both processes.
             this.stopRetention = startRetentionSweeper({
                 getConnection: () => adapterFor(this.connection.rawConnection),
                 table: 'visitor_event',
-                options: opts.retention,
+                options: retention,
                 label: 'visitor-analytics',
             });
         }
@@ -136,7 +139,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
     }
 
     private rateLimited(req: Request, res: Response, bucket: string): boolean {
-        const ip = (req.headers['cf-connecting-ip'] as string) || req.ip || '';
+        const ip = realIp(req) || '';
         if (!ip || !this.limiter) return false;
         if (!this.limiter.allow(`${bucket}|${ip}`)) {
             res.setHeader('Retry-After', '60');
@@ -192,7 +195,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
      *  package name is hard-coded; HULO_SELF_UPDATE=off disables. */
     @Post('update/run')
     async updateRun(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
-        if (!requireAdmin(ctx, res)) return;
+        if (!requireAdmin(ctx, res, [Permission.SuperAdmin])) return;
         const updater = VisitorAnalyticsPlugin.getUpdateChecker();
         const target = String(body?.version || updater?.getStatus()?.latest || '').trim();
         if (!target) return res.status(400).json({ ok: false, message: 'No target version known yet — the registry check runs daily; try again shortly.' });
@@ -204,7 +207,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
      *  boot-time checks, applied immediately and persisted. */
     @Post('licence/activate')
     async licenceActivate(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
-        if (!requireAdmin(ctx, res)) return;
+        if (!requireAdmin(ctx, res, [Permission.UpdateSettings])) return;
         const key = String(body?.key || '').trim();
         if (!key) return res.status(400).json({ licensed: false, message: 'Paste your licence key first.' });
         const status = VisitorAnalyticsPlugin.activateRuntimeLicence(key);
@@ -217,7 +220,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
     /** Remove an admin-activated key (env-configured keys unaffected). */
     @Post('licence/deactivate')
     async licenceDeactivate(@Ctx() ctx: RequestContext, @Res() res: Response) {
-        if (!requireAdmin(ctx, res)) return;
+        if (!requireAdmin(ctx, res, [Permission.SuperAdmin])) return;
         await this.licenceStore.clear(PLUGIN_ID_FOR_STORE);
         VisitorAnalyticsPlugin.deactivateRuntimeLicence();
         return res.json({ licensed: false });
@@ -228,7 +231,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
      *  round-trip, no .env edit, no restart. */
     @Post('licence/purchase-link')
     async licencePurchaseLink(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
-        if (!requireAdmin(ctx, res)) return;
+        if (!requireAdmin(ctx, res, [Permission.UpdateSettings])) return;
         const plan = (['monthly', 'annual', 'lifetime'].includes(String(body?.plan)) ? String(body.plan) : 'annual') as 'monthly' | 'annual' | 'lifetime';
         try {
             const r = await this.purchaseClaimClient().createPurchaseLink(plan, String(body?.email || '').trim() || undefined);
@@ -255,7 +258,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
      *  the buy-from-admin claim or by the stored licence key itself. */
     @Post('licence/portal-link')
     async licencePortalLink(@Ctx() ctx: RequestContext, @Res() res: Response) {
-        if (!requireAdmin(ctx, res)) return;
+        if (!requireAdmin(ctx, res, [Permission.UpdateSettings])) return;
         let storedKey: string | null = null;
         try { storedKey = await this.licenceStore.load(PLUGIN_ID_FOR_STORE); } catch { storedKey = null; }
         const url = await this.purchaseClaimClient().billingPortalUrl(storedKey);
@@ -355,7 +358,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
             issuedSession = true;
         }
 
-        const channelId = Number(body?.channelId) || 1;
+        const channelId = clampInt(body?.channelId, 1, 1, 2147483647);
         const customerId = body?.customerId != null ? Number(body.customerId) || null : null;
         const events = Array.isArray(body?.events) ? body.events.slice(0, 50) : [];
 
@@ -411,7 +414,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                     COUNT(DISTINCT visitorId) AS visitors,
                     COUNT(DISTINCT sessionId) AS sessions,
                     COUNT(*) AS events,
-                    SUM(type='pageview') AS pageviews
+                    SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END) AS pageviews
              FROM visitor_event
              WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}
              GROUP BY DATE(createdAt)
@@ -421,7 +424,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const [{ totalVisitors, totalSessions, totalPageviews, avgTimeMs }] = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(DISTINCT visitorId) AS totalVisitors,
                     COUNT(DISTINCT sessionId) AS totalSessions,
-                    SUM(type='pageview')      AS totalPageviews,
+                    SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END)      AS totalPageviews,
                     AVG(CASE WHEN type='unload' AND timeOnPageMs > 0 THEN timeOnPageMs END) AS avgTimeMs
              FROM visitor_event
              WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY) ${w.sql}`,
@@ -432,7 +435,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const [prev] = await adapterFor(this.connection.rawConnection).query(
             `SELECT COUNT(DISTINCT visitorId) AS totalVisitors,
                     COUNT(DISTINCT sessionId) AS totalSessions,
-                    SUM(type='pageview')      AS totalPageviews,
+                    SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END)      AS totalPageviews,
                     AVG(CASE WHEN type='unload' AND timeOnPageMs > 0 THEN timeOnPageMs END) AS avgTimeMs
              FROM visitor_event
              WHERE createdAt >= DATE_SUB(NOW(), INTERVAL ? DAY)
@@ -803,6 +806,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
     async journey(@Ctx() ctx: RequestContext, @Param('visitorId') visitorId: string, @Res() res: Response) {
         if (!requireAdmin(ctx, res)) return;
         const events = await this.connection.rawConnection.getRepository(VisitorEvent).find({
+            select: ['id', 'createdAt', 'type', 'url', 'title', 'referrerDomain', 'timeOnPageMs', 'sessionId', 'goalId'] as any,
             where: { visitorId: String(visitorId).slice(0, 64) },
             order: { createdAt: 'ASC' },
             take: 1000,
@@ -825,7 +829,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                     MIN(createdAt)             AS firstSeenAt,
                     MAX(createdAt)             AS lastSeenAt,
                     COUNT(DISTINCT sessionId)  AS sessions,
-                    SUM(type='pageview')       AS pageviews,
+                    SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END)       AS pageviews,
                     MAX(country)               AS country,
                     MAX(city)                  AS city,
                     MAX(browser)               AS browser,
@@ -878,9 +882,9 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                     MIN(createdAt)          AS firstSeenAt,
                     MAX(createdAt)          AS lastSeenAt,
                     COUNT(DISTINCT sessionId) AS totalSessions,
-                    SUM(type='pageview')    AS totalPageviews,
-                    SUM(type='unload')      AS totalUnloads,
-                    SUM(type='event')       AS totalEvents,
+                    SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END)    AS totalPageviews,
+                    SUM(CASE WHEN type='unload' THEN 1 ELSE 0 END)      AS totalUnloads,
+                    SUM(CASE WHEN type='event' THEN 1 ELSE 0 END)       AS totalEvents,
                     SUM(timeOnPageMs)       AS totalTimeMs,
                     MAX(ip)                 AS ip,
                     MAX(ipHash)             AS ipHash,
@@ -908,7 +912,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
                     MIN(createdAt) AS startedAt,
                     MAX(createdAt) AS endedAt,
                     COUNT(*)       AS events,
-                    SUM(type='pageview') AS pageviews,
+                    SUM(CASE WHEN type='pageview' THEN 1 ELSE 0 END) AS pageviews,
                     SUM(timeOnPageMs)    AS timeMs,
                     MIN(CASE WHEN type='pageview' THEN url END) AS entryUrl
              FROM visitor_event
@@ -1006,7 +1010,8 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
             const idx = part.indexOf('=');
             if (idx < 0) continue;
             const k = part.slice(0, idx).trim();
-            const v = decodeURIComponent(part.slice(idx + 1).trim());
+            let v = part.slice(idx + 1).trim();
+            try { v = decodeURIComponent(v); } catch { /* a third-party cookie with a bare % — keep it raw */ }
             if (k) out[k] = v;
         }
         return out;
@@ -1042,7 +1047,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
     /** Admin: create a goal. */
     @Post('goals')
     async createGoal(@Ctx() ctx: RequestContext, @Body() body: any, @Res() res: Response) {
-        if (!requireAdmin(ctx, res)) return;
+        if (!requireAdmin(ctx, res, [Permission.UpdateSettings])) return;
         if (!VisitorAnalyticsPlugin.hasPremiumAccess()) {
             return res.status(402).json(premiumFeatureError('vendure-plugin-visitor-analytics'));
         }
@@ -1065,14 +1070,15 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
     /** Admin: update a goal. */
     @Put('goals/:id')
     async updateGoal(@Ctx() ctx: RequestContext, @Param('id') idParam: string, @Body() body: any, @Res() res: Response) {
-        if (!requireAdmin(ctx, res)) return;
-        const id = parseInt(idParam, 10);
+        if (!requireAdmin(ctx, res, [Permission.UpdateSettings])) return;
+        const id = Number.parseInt(idParam, 10);
+        if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'bad id' });
         const repo = this.connection.rawConnection.getRepository(ConversionGoal);
         const row = await repo.findOne({ where: { id } });
         if (!row) return res.status(404).json({ error: 'Not found' });
         if (typeof body?.name === 'string') row.name = body.name.slice(0, 128);
         if (typeof body?.urlPattern === 'string') row.urlPattern = body.urlPattern.slice(0, 256);
-        if (typeof body?.valueMinor === 'number') row.valueMinor = Math.max(0, body.valueMinor);
+        if (typeof body?.valueMinor === 'number') row.valueMinor = Math.max(0, Math.trunc(body.valueMinor));
         if (typeof body?.enabled === 'boolean') row.enabled = body.enabled;
         const saved = await repo.save(row);
         this.tracking.invalidateGoalCache();
@@ -1082,8 +1088,9 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
     /** Admin: delete a goal. */
     @Delete('goals/:id')
     async deleteGoal(@Ctx() ctx: RequestContext, @Param('id') idParam: string, @Res() res: Response) {
-        if (!requireAdmin(ctx, res)) return;
-        const id = parseInt(idParam, 10);
+        if (!requireAdmin(ctx, res, [Permission.UpdateSettings])) return;
+        const id = Number.parseInt(idParam, 10);
+        if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'bad id' });
         const repo = this.connection.rawConnection.getRepository(ConversionGoal);
         const result = await repo.delete({ id });
         this.tracking.invalidateGoalCache();
@@ -1099,7 +1106,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const rows = await adapterFor(this.connection.rawConnection).query(
             `SELECT g.id, g.name, g.urlPattern, g.valueMinor, g.enabled,
                     COUNT(DISTINCT v.visitorId) AS uniqueVisitors,
-                    COUNT(*) AS completions
+                    COUNT(v.id) AS completions
              FROM conversion_goal g
              LEFT JOIN visitor_event v
                 ON v.goalId = g.id
@@ -1140,7 +1147,9 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         res.setHeader('Content-Disposition', `attachment; filename="visitors-${new Date().toISOString().slice(0, 10)}.csv"`);
         const esc = (v: any): string => {
             if (v === null || v === undefined) return '';
-            const s = String(v).replace(/"/g, '""');
+            let s = String(v);
+            if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // no formulas in Excel/Sheets
+            s = s.replace(/"/g, '""');
             return /[",\n]/.test(s) ? `"${s}"` : s;
         };
         res.write('createdAt,visitorId,sessionId,customerId,channelId,type,url,title,referrerDomain,country,region,city,browser,os,device,isBot,goalId,utmSource,utmMedium,utmCampaign\n');

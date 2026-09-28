@@ -61,8 +61,12 @@ export interface VisitorAnalyticsPluginOptions {
     corsAllowedOrigins?: string[];
 
     // ── Retention ───────────────────────────────────────────────────────
-    /** Auto-prune `visitor_event` rows older than `days` days. */
-    retention?: RetentionOptions;
+    /** Auto-prune `visitor_event` rows older than `days` days. Default `{ days: 400 }`; `false` keeps everything. */
+    retention?: RetentionOptions | false;
+    /** Proxy headers that may override `req.ip` (rate limiting, stored IPs).
+     *  Only list what your edge sets and strips from clients, e.g.
+     *  `['cf-connecting-ip']` behind Cloudflare. Default: none (`req.ip`). */
+    trustedIpHeaders?: Array<'cf-connecting-ip' | 'true-client-ip' | 'x-real-ip' | 'x-forwarded-for'>;
 
     // ── Cart abandonment ────────────────────────────────────────────────
     /** Options for the abandoned-cart feature. Storefront must fire

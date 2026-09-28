@@ -5,6 +5,53 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.2] — 2026-09-28
+
+Reliability and security pass — no new features. Two indexes on
+`visitor_event` (`createdAt`, `(channelId, createdAt)`) are declared (run
+your migrations).
+
+### Fixed
+- **Storefront identity across origins.** `hulo.js` now keeps a
+  first-party visitor id (`localStorage`) and a 30-minute session id and
+  sends them with every batch; on a storefront hosted on a different origin
+  than the API the cookies never travelled, so uniques equalled page views.
+- **URLs.** `hulo.js` sends `location.href`; events are now stored as
+  path + query, so funnels, conversion goals and source reports match
+  again.
+- **Permissions.** Self-update requires SuperAdmin; licence, purchase,
+  portal and goal changes require UpdateSettings (everything was reachable
+  with ReadCustomer).
+- The GraphQL visitor summary aggregates bounce rate and duration in SQL
+  instead of loading every session row; `SUM(boolean)` replaced with
+  `SUM(CASE …)` everywhere (Postgres).
+- A cookie containing a bare `%` no longer turns every beacon into a 500;
+  UTM fields are capped to their column widths (a long `utm_source` used
+  to drop the whole batch); oversized `meta` (large cart snapshots) is
+  shrunk item-wise instead of cut mid-JSON, so abandoned carts are still
+  detected.
+- The rate limiter keys on the same resolved address as everything else;
+  proxy headers are only honoured when listed in `trustedIpHeaders`.
+- Public `trending` is capped at 7 days and memoised for a minute; CSV
+  exports quote cells that would run as spreadsheet formulas; the journey
+  endpoint returns only the fields the drawer shows; goal stats count
+  completions correctly (`COUNT(v.id)`); goal ids and query clamps are
+  validated.
+- Abandoned-cart scanner: landing/last URL and referrer are the real first
+  and last (the previous expression always returned an empty string), a
+  scan cannot overlap the previous one, the Slack post times out after 8 s,
+  and the opt-out GET shows a confirm button while the POST performs it
+  (mail clients prefetch GETs).
+- The IP hash salt falls back to `signingSecret` before the public
+  constant.
+- Admin UI: the update banner is no longer shown twice, the copy button
+  copies a real `@`, the restart poll is cancelled on destroy.
+
+### Changed
+- `retention` defaults to `{ days: 400 }` (`false` keeps everything) and
+  the sweeper runs on the worker only.
+- Events are inserted with `insert()` (no reload round trip).
+
 ## [0.18.1] — 2026-09-11
 
 _Same content as 0.18.0, whose publish was left staged on the npm registry and never promoted; 0.18.1 is the first installable release of this line._

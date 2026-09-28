@@ -2,6 +2,11 @@ import { Controller, Get, Query } from '@nestjs/common';
 import { Ctx, RequestContext, Allow, Permission } from '@vendure/core';
 import { JourneyBuffsService } from './journey-buffs.service';
 
+function clampQ(raw: any, fallback: number, min: number, max: number): number {
+    const n = parseInt(String(raw ?? ''), 10);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+}
+
 @Controller('ees')
 export class JourneyBuffsController {
     constructor(private readonly service: JourneyBuffsService) {}
@@ -16,7 +21,7 @@ export class JourneyBuffsController {
         @Query('limit') l?: string,
     ) {
         const items = await this.service.rageClickHotSpots(
-            +(d || 7), +(ch || 1), +(l || 20),
+            clampQ(d, 7, 1, 365), clampQ(ch, 1, 1, 2147483647), clampQ(l, 20, 1, 200),
         );
         return { items };
     }
@@ -31,7 +36,7 @@ export class JourneyBuffsController {
         @Query('limit') l?: string,
     ) {
         const items = await this.service.deadClickHotSpots(
-            +(d || 7), +(ch || 1), +(l || 20),
+            clampQ(d, 7, 1, 365), clampQ(ch, 1, 1, 2147483647), clampQ(l, 20, 1, 200),
         );
         return { items };
     }
@@ -46,7 +51,7 @@ export class JourneyBuffsController {
     ) {
         const visitorId = String(v || '').trim();
         if (!visitorId) return { error: 'visitorId-required' };
-        const items = await this.service.sessionSummary(visitorId, +(l || 25));
+        const items = await this.service.sessionSummary(visitorId.slice(0, 64), clampQ(l, 25, 1, 200));
         return { visitorId, items };
     }
 }

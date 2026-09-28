@@ -33,6 +33,26 @@ export const HULO_STOREFRONT_JS = (backendBaseUrl: string, defaultChannelId = 1)
   // or 2s max. Coalesces bursts of events into one HTTP roundtrip.
   var QUEUE = [];
   var FLUSH_TIMER = null;
+  // First-party ids: cookies are SameSite=Lax and never travel cross-site, so a
+  // storefront on another origin than the API must carry them itself.
+  function hexId() {
+    try { var a = new Uint8Array(16); crypto.getRandomValues(a); return Array.prototype.map.call(a, function (b) { return ('0' + b.toString(16)).slice(-2); }).join(''); }
+    catch (_e) { return String(Date.now().toString(16)) + Math.random().toString(16).slice(2, 18); }
+  }
+  function ids() {
+    var vid = null, sid = null;
+    try {
+      vid = localStorage.getItem('hulo_vid');
+      if (!vid || !/^[a-f0-9]{16,64}$/i.test(vid)) { vid = hexId(); localStorage.setItem('hulo_vid', vid); }
+      var now = Date.now();
+      var raw = sessionStorage.getItem('hulo_sid') || localStorage.getItem('hulo_sid') || '';
+      var parts = raw.split('|');
+      if (parts.length === 2 && /^[a-f0-9]{16,64}$/i.test(parts[0]) && now - Number(parts[1]) < 30 * 60000) sid = parts[0];
+      else sid = hexId();
+      localStorage.setItem('hulo_sid', sid + '|' + now);
+    } catch (_e) { /* storage blocked: the server mints ids per request */ }
+    return { visitorId: vid || undefined, sessionId: sid || undefined };
+  }
   function enqueue(event) {
     event.url = event.url || location.href;
     event.channelId = event.channelId || CONFIG.channelId;
@@ -48,7 +68,8 @@ export const HULO_STOREFRONT_JS = (backendBaseUrl: string, defaultChannelId = 1)
     FLUSH_TIMER = null;
     if (!QUEUE.length) return;
     var batch = QUEUE.splice(0, QUEUE.length);
-    var payload = JSON.stringify({ events: batch });
+    var id = ids();
+    var payload = JSON.stringify({ events: batch, visitorId: id.visitorId, sessionId: id.sessionId, channelId: CONFIG.channelId });
     // Prefer sendBeacon on unload (survives page transitions) and
     // fall back to fetch keepalive for normal calls.
     try {
