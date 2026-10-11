@@ -56,7 +56,13 @@ first boot by the licence SDK) holds the report settings.
   page".
 
 ### Changed
-- `@huloglobal/vendure-licence-sdk` `^0.15.0`.
+- `@huloglobal/vendure-licence-sdk` `^0.15.1`.
+
+### Fixed
+- The daily heartbeat reported `jti: unlicensed` forever once a key was
+  activated from the admin page or installed by the buy-from-admin claim,
+  so the licence server dropped those installs' usage figures. It now
+  reads the key currently in force on every ping.
 
 ## [0.18.5] — 2026-09-28
 

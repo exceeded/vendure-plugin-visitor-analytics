@@ -182,10 +182,17 @@ export class VisitorAnalyticsPlugin {
         });
         if (status.valid) {
             VisitorAnalyticsPlugin.licenceStatus = status;
+            VisitorAnalyticsPlugin.activeLicenceKey = key;
             VisitorAnalyticsPlugin.evalClientInternal?.stop();
         }
         return status;
     }
+
+    /** The licence key currently in force — the env/init key, or the one
+     *  activated from the admin UI / installed by the purchase claim. The
+     *  heartbeat reads it on every ping so the jti follows the live key
+     *  instead of staying "unlicensed" after an in-app activation. */
+    private static activeLicenceKey: string | null = null;
 
     /** Drop an admin-activated key: back to unlicensed + evaluation. */
     static deactivateRuntimeLicence(): void {
@@ -193,6 +200,7 @@ export class VisitorAnalyticsPlugin {
             valid: false,
             message: 'No licence key configured. The plugin will run in unlicensed (degraded) mode.',
         } as LicenceStatus;
+        VisitorAnalyticsPlugin.activeLicenceKey = null;
         VisitorAnalyticsPlugin.startEvaluation();
         VisitorAnalyticsPlugin.evalClientInternal?.start();
     }
@@ -256,6 +264,7 @@ export class VisitorAnalyticsPlugin {
             revokedIds: VisitorAnalyticsPlugin.revocation.getRevokedIds(),
         });
         VisitorAnalyticsPlugin.licenceStatus = status;
+        VisitorAnalyticsPlugin.activeLicenceKey = status.valid ? (options.licenceKey || null) : null;
 
         if (!status.valid) {
             // Unlicensed: register the install (no premium is granted by this; the 14-day
@@ -273,6 +282,7 @@ export class VisitorAnalyticsPlugin {
                 packageName: PKG_NAME,
                 packageVersion: PKG_VERSION,
                 licenceKey: options.licenceKey,
+                licenceKeyProvider: () => VisitorAnalyticsPlugin.activeLicenceKey,
                 publicKeyFingerprint: fingerprintPublicKey(HULO_PUBLIC_KEY),
             });
             VisitorAnalyticsPlugin.heartbeat.start();
