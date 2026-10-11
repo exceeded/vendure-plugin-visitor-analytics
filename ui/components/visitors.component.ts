@@ -113,6 +113,7 @@ interface VisitorProfile {
                     <a href="https://huloglobal.com/vendure-plugins/visitor-analytics/" target="_blank" class="gbtn gbtn-outline gbtn-sm">Details ↗</a>
                 </div>
             </div>
+            <div class="lic-notice" *ngIf="licMeta?.notice?.message">{{ licMeta.notice.message }}</div>
         </vdr-page-block>
         <vdr-page-block *ngIf="licMeta && !licMeta.licensed">
             <div class="lic-banner">
@@ -123,9 +124,13 @@ interface VisitorProfile {
                     </ng-container>
                     <ng-container *ngIf="licMeta.eval?.daysRemaining == null">everything is enabled.</ng-container>
                     Afterwards the plugin drops to the free tier.
+                    <div class="lic-features" *ngIf="licMeta.premiumFeatures?.length">Included: {{ licMeta.premiumFeatures.join(' · ') }}</div>
+                    <div class="lic-sofar" *ngIf="licMeta.recentStats?.length">So far: {{ recentStatsLine() }}</div>
                 </div>
                 <div *ngIf="licMeta.tier !== 'trial'">
                     <strong>🔓 Free tier</strong> — premium features need a licence. Start your <strong>14-day free trial</strong> below (card required, nothing charged until day 15, cancel any time) or buy a lifetime licence. Premium features are paused; your configuration is kept and reactivates instantly with a key.
+                    <div class="lic-features" *ngIf="licMeta.premiumFeatures?.length">With a licence: {{ licMeta.premiumFeatures.join(' · ') }}</div>
+                    <div class="lic-sofar" *ngIf="licMeta.recentStats?.length">{{ licMeta.eval?.source === 'server' ? 'During your evaluation' : 'So far' }}: {{ recentStatsLine() }}</div>
                 </div>
                 <div class="lic-actions">
                     <input class="lic-key" type="text" placeholder="Paste licence key (eyJhbGciOi…)" [(ngModel)]="licKeyInput" [disabled]="licActivating">
@@ -134,6 +139,33 @@ interface VisitorProfile {
                     <button class="gbtn gbtn-primary gbtn-sm" (click)="buyLicence()" [disabled]="buying">{{ buying ? 'Opening checkout…' : (buyPlan === 'lifetime' ? 'Buy lifetime →' : 'Start 14-day free trial →') }}</button>
                     <span *ngIf="claim?.state === 'pending'" style="font-size:12.5px;font-weight:600">⏳ Waiting for checkout to finish — the licence installs itself. <a (click)="checkClaim(true)" style="cursor:pointer;text-decoration:underline">Check now</a></span>
                     <a href="https://huloglobal.com/vendure-plugins/visitor-analytics/" target="_blank" class="gbtn gbtn-outline gbtn-sm">Details ↗</a>
+                </div>
+                <div class="lic-remind" *ngIf="licMeta.tier === 'trial'">
+                    <span>Email me before it ends:</span>
+                    <input class="lic-key" type="email" placeholder="you@company.com" [(ngModel)]="remindEmail" [disabled]="remindSending || remindDone">
+                    <button class="gbtn gbtn-outline gbtn-sm" (click)="sendRemindMe()" [disabled]="remindSending || remindDone || !remindEmail">{{ remindDone ? 'We will email you ✓' : (remindSending ? 'Saving…' : 'Remind me') }}</button>
+                </div>
+            </div>
+            <div class="lic-notice" *ngIf="licMeta?.notice?.message">{{ licMeta.notice.message }}</div>
+            <div class="lic-notice" *ngIf="licMeta?.capReached">Free-tier cap reached today — the 100 events/day budget is spent, so new events are skipped until midnight UTC. Start the free trial or activate a key above to lift the cap.</div>
+        </vdr-page-block>
+
+        <!-- ── Weekly report (Monday 08:00) — sits next to the licence card because this page has no Settings tab. -->
+        <vdr-page-block *ngIf="digest">
+            <div class="card">
+                <div class="card-block">
+                    <div class="digest-head">
+                        <h3 class="card-title">📬 Weekly report</h3>
+                        <span class="muted">Every Monday at 08:00 (server time): visitors, page views, carts recovered and what to set up next.</span>
+                    </div>
+                    <div class="digest-row">
+                        <label class="digest-toggle"><input type="checkbox" [checked]="digest.enabled" (change)="saveDigest({ enabled: !digest.enabled })" [disabled]="digestSaving"> Enabled</label>
+                        <input class="lic-key" type="email" [(ngModel)]="digestRecipient" [placeholder]="digest.defaultRecipient ? 'Defaults to ' + digest.defaultRecipient : 'Recipient email (no default yet)'" [disabled]="digestSaving">
+                        <button class="gbtn gbtn-outline gbtn-sm" (click)="saveDigest({ recipient: digestRecipient })" [disabled]="digestSaving || digestRecipient === (digest.recipient || '')">Save</button>
+                        <span class="muted digest-when">Last sent {{ digest.lastSentAt ? (digest.lastSentAt | date:'d MMM y') : 'never' }} · next {{ digest.nextDueAt ? (digest.nextDueAt | date:'d MMM y, HH:mm') : 'off' }}</span>
+                        <button class="gbtn gbtn-primary gbtn-sm" (click)="sendDigestTest()" [disabled]="digestTesting">{{ digestTesting ? 'Sending…' : 'Send me a test' }}</button>
+                        <button class="gbtn gbtn-outline gbtn-sm" (click)="previewDigest()">Preview</button>
+                    </div>
                 </div>
             </div>
         </vdr-page-block>
@@ -179,6 +211,26 @@ interface VisitorProfile {
             </div>
         </vdr-page-block>
 
+        <!-- ── Set-up checklist: real checks from GET /ees/setup; hidden once complete (or dismissed, until something regresses). -->
+        <vdr-page-block *ngIf="setupVisible()">
+            <div class="card">
+                <div class="card-block">
+                    <div class="setup-head">
+                        <h3 class="card-title">Set-up checklist <span class="muted">{{ setupDoneCount() }} of {{ setup!.items.length }} done</span></h3>
+                        <a class="setup-hide" (click)="hideSetup()">Hide</a>
+                    </div>
+                    <div class="setup-row" *ngFor="let it of setup!.items">
+                        <span class="setup-dot" [class.done]="it.done"></span>
+                        <div class="setup-text">
+                            <div class="setup-label">{{ it.label }}</div>
+                            <div class="setup-hint" *ngIf="!it.done">{{ it.hint }}</div>
+                        </div>
+                        <a *ngIf="!it.done && it.url" [href]="it.url" target="_blank" class="setup-link">Docs ↗</a>
+                    </div>
+                </div>
+            </div>
+        </vdr-page-block>
+
         <vdr-page-block>
             <div class="kpi-row">
                 <div class="kpi live-kpi">
@@ -186,8 +238,9 @@ interface VisitorProfile {
                         <span class="live-dot" [class.connected]="liveConnected"></span>
                         Live now
                     </div>
-                    <div class="kpi-num">{{ liveCount | number }}</div>
-                    <div class="kpi-sub" *ngIf="liveUpdatedAt">refreshed {{ liveUpdatedAt | date:'HH:mm:ss' }}</div>
+                    <div class="kpi-num">{{ liveLocked ? '—' : (liveCount | number) }}</div>
+                    <div class="kpi-sub" *ngIf="liveUpdatedAt && !liveLocked">refreshed {{ liveUpdatedAt | date:'HH:mm:ss' }}</div>
+                    <div class="kpi-sub" *ngIf="liveLocked"><span class="unlock-chip">🔒 Live view needs a licence — start the free trial above</span></div>
                 </div>
                 <div class="kpi">
                     <div class="kpi-label">Unique visitors</div>
@@ -214,6 +267,16 @@ interface VisitorProfile {
                     <div class="kpi-label">Pages / session</div>
                     <div class="kpi-num">{{ pagesPerSession() }}</div>
                     <div class="kpi-sub">avg {{ humanTime(summary.avgTimeMs) }} on page</div>
+                </div>
+                <div class="kpi">
+                    <div class="kpi-label">Recovered revenue</div>
+                    <div class="kpi-num">{{ money(carts?.recoveredValueMinor) }}</div>
+                    <div class="kpi-sub">from recovered carts, last {{ days }} days</div>
+                </div>
+                <div class="kpi">
+                    <div class="kpi-label">Carts recovered / abandoned</div>
+                    <div class="kpi-num">{{ cartsRecovered() | number }} <span class="kpi-of">/ {{ (carts?.total || 0) | number }}</span></div>
+                    <div class="kpi-sub">{{ carts?.recoveryRatePct || 0 }}% recovery rate</div>
                 </div>
             </div>
 
@@ -653,6 +716,31 @@ interface VisitorProfile {
         .upd-cmd { font-family: monospace; font-size: 12px; background: rgba(0,0,0,.06); padding: 2px 6px; border-radius: 5px; }
         [data-theme='dark'] .upd-cmd, :host-context([data-theme='dark']) .upd-cmd { background: rgba(255,255,255,.1); }
         .lic-key { padding:5px 9px; border:1px solid var(--gb-ui-border, #d1d5db); border-radius:7px; font-size:12.5px; min-width:280px; background:#fff; color:#0f172a; }
+        .lic-notice { margin-top:8px; padding:10px 14px; border-radius:8px; background:#fde68a; border:1px solid #f59e0b; color:#78350f; font-size:13px; }
+        .lic-features { margin-top:6px; font-size:12.5px; color:#6b5a1e; }
+        .lic-sofar { margin-top:4px; font-size:12.5px; font-weight:600; }
+        .lic-remind { display:flex; gap:6px; align-items:center; flex-wrap:wrap; width:100%; font-size:12.5px; }
+        .unlock-chip { display:inline-block; padding:2px 8px; border-radius:999px; background:#fef3c7; border:1px solid #fcd34d; color:#92400e; font-size:11px; font-weight:600; }
+        .kpi-of { font-size:16px; font-weight:600; color:var(--color-component-color-300, #64748b); }
+
+        /* ── Weekly report card ─────────────────────────────────── */
+        .digest-head { display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; margin-bottom:10px; }
+        .digest-head .card-title { margin:0; }
+        .digest-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-size:13px; }
+        .digest-toggle { display:inline-flex; gap:6px; align-items:center; font-weight:600; cursor:pointer; }
+        .digest-when { font-size:12px; }
+
+        /* ── Set-up checklist ───────────────────────────────────── */
+        .setup-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px; }
+        .setup-head .card-title { margin:0; }
+        .setup-hide { font-size:12px; cursor:pointer; color:var(--color-component-color-300, #64748b); text-decoration:underline; }
+        .setup-row { display:grid; grid-template-columns:14px 1fr auto; gap:10px; align-items:start; padding:6px 0; border-top:1px solid var(--color-component-border-100, #f1f5f9); }
+        .setup-row:first-of-type { border-top:0; }
+        .setup-dot { width:10px; height:10px; border-radius:999px; background:#cbd5e1; margin-top:5px; }
+        .setup-dot.done { background:#10b981; box-shadow:0 0 0 3px rgba(16,185,129,.18); }
+        .setup-label { font-size:13px; font-weight:600; color:var(--color-text-100, #0f172a); }
+        .setup-hint { font-size:12px; color:var(--color-component-color-300, #64748b); margin-top:2px; line-height:1.45; }
+        .setup-link { font-size:12px; white-space:nowrap; }
 
         :host { color: var(--color-text-100, inherit); display: block; }
 
@@ -1223,6 +1311,126 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     updating = false;
     updateProgress = 'Updating…';
 
+    // ── Licence-gated error messages ────────────────────────────────
+    /** One sentence for any 402 / licence-coded error; the server's own
+     *  message otherwise, then the caller's fallback. */
+    private errMsg(e: any, what: string, fallback: string): string {
+        const code = e?.error?.error;
+        if (e?.status === 402 || code === 'licence-required' || code === 'licence_required' || code === 'premium-feature') {
+            return `${what} needs a licence — start the free trial or activate a key at the top of this page.`;
+        }
+        return e?.error?.message || fallback;
+    }
+
+    /** "£1,234.56 of cart value recovered · 3 carts recovered · …" */
+    recentStatsLine(): string {
+        const rs: Array<{ label: string; value: string }> = this.licMeta?.recentStats || [];
+        return rs.map(r => `${r.value} ${r.label}`).join(' · ');
+    }
+
+    // ── Trial lead ("Email me before it ends") ──────────────────────
+    remindEmail = '';
+    remindSending = false;
+    remindDone = false;
+    sendRemindMe() {
+        const email = (this.remindEmail || '').trim();
+        if (!email || this.remindSending) return;
+        this.remindSending = true;
+        this.http.post<any>('/ees/eval/remind-me', { email }).subscribe({
+            next: () => { this.remindSending = false; this.remindDone = true; this.notify.success('We will email you before the evaluation ends'); this.loadDigest(); this.cdr.markForCheck(); },
+            error: e => { this.remindSending = false; this.notify.error(this.errMsg(e, 'Reminder', 'Could not save that address — check it and try again')); this.cdr.markForCheck(); },
+        });
+    }
+
+    // ── Weekly report card ──────────────────────────────────────────
+    digest: { enabled: boolean; recipient: string | null; defaultRecipient: string | null; lastSentAt: string | null; nextDueAt: string | null } | null = null;
+    digestRecipient = '';
+    digestSaving = false;
+    digestTesting = false;
+    loadDigest() {
+        this.http.get<any>('/ees/digest/settings').subscribe({
+            next: d => { this.digest = d; this.digestRecipient = d?.recipient || ''; this.cdr.markForCheck(); },
+            error: () => undefined,
+        });
+    }
+    saveDigest(patch: { enabled?: boolean; recipient?: string | null }) {
+        this.digestSaving = true;
+        this.http.post<any>('/ees/digest/settings', patch).subscribe({
+            next: d => { this.digestSaving = false; this.digest = d; this.digestRecipient = d?.recipient || ''; this.notify.success('Weekly report settings saved'); this.cdr.markForCheck(); },
+            error: e => { this.digestSaving = false; this.notify.error(this.errMsg(e, 'Weekly report', 'Could not save the weekly report settings')); this.cdr.markForCheck(); },
+        });
+    }
+    sendDigestTest() {
+        this.digestTesting = true;
+        this.http.post<any>('/ees/digest/send-test', { to: (this.digestRecipient || '').trim() || undefined }).subscribe({
+            next: r => {
+                this.digestTesting = false;
+                if (r?.sent) this.notify.success(`Sent "${r.subject}" to ${r.to}`);
+                else this.notify.error(r?.reason === 'no-recipient' ? 'No recipient — enter an address first' : (r?.reason || 'The report could not be sent'));
+                this.cdr.markForCheck();
+            },
+            error: e => { this.digestTesting = false; this.notify.error(this.errMsg(e, 'Weekly report', 'The report could not be sent')); this.cdr.markForCheck(); },
+        });
+    }
+    /** Opens the tab synchronously (popup blockers) and fills it with the
+     *  HTML fetched through the same authenticated HttpClient. */
+    previewDigest() {
+        const w = window.open('', '_blank');
+        this.http.get('/ees/digest/preview', { responseType: 'text' }).subscribe({
+            next: html => {
+                if (w) { w.document.open(); w.document.write(html); w.document.close(); }
+            },
+            error: e => { w?.close(); this.notify.error(this.errMsg(e, 'Preview', 'Could not render the report')); },
+        });
+    }
+
+    // ── Set-up checklist ────────────────────────────────────────────
+    setup: { items: Array<{ key: string; label: string; done: boolean; hint: string; tab?: string; url?: string }>; complete: boolean } | null = null;
+    private readonly setupHiddenKey = 'hulo-vendure-plugin-visitor-analytics-setup-hidden';
+    private readonly setupDoneKey = 'hulo-vendure-plugin-visitor-analytics-setup-done';
+    loadSetup() {
+        this.http.get<any>('/ees/setup').subscribe({
+            next: s => { this.setup = s; this.cdr.markForCheck(); },
+            error: () => undefined,
+        });
+    }
+    setupDoneCount(): number { return (this.setup?.items || []).filter(i => i.done).length; }
+    /** Hidden when complete, or when dismissed — unless an item that was
+     *  done at dismissal time has since come undone. */
+    setupVisible(): boolean {
+        if (!this.setup || this.setup.complete) return false;
+        let hidden = '';
+        let doneThen: string[] = [];
+        try {
+            hidden = localStorage.getItem(this.setupHiddenKey) || '';
+            doneThen = (localStorage.getItem(this.setupDoneKey) || '').split(',').filter(Boolean);
+        } catch { /* storage blocked — always show */ }
+        if (hidden !== '1') return true;
+        const doneNow = new Set(this.setup.items.filter(i => i.done).map(i => i.key));
+        return doneThen.some(k => !doneNow.has(k));
+    }
+    hideSetup() {
+        try {
+            localStorage.setItem(this.setupHiddenKey, '1');
+            localStorage.setItem(this.setupDoneKey, (this.setup?.items || []).filter(i => i.done).map(i => i.key).join(','));
+        } catch { /* non-fatal */ }
+        this.cdr.markForCheck();
+    }
+
+    // ── Abandoned-cart value metrics (GET /ees/abandoned-carts/summary) ─
+    carts: { total: number; recoveredCount: number; convertedCount: number; recoveryRatePct: number; recoveredValueMinor: number } | null = null;
+    liveLocked = false;
+    loadCarts() {
+        this.http.get<any>(`/ees/abandoned-carts/summary?days=${this.days}`).subscribe({
+            next: c => { this.carts = c; this.cdr.markForCheck(); },
+            error: () => { this.carts = null; },
+        });
+    }
+    cartsRecovered(): number { return (this.carts?.recoveredCount || 0) + (this.carts?.convertedCount || 0); }
+    money(minor: number | null | undefined): string {
+        return '£' + ((Number(minor) || 0) / 100).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
     runSelfUpdate() {
         const target = this.licMeta?.update?.latest;
         if (!target || this.updating) return;
@@ -1243,7 +1451,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
             },
             error: e => {
                 this.updating = false;
-                this.notify.error(e?.error?.message || 'Update failed — nothing was changed');
+                this.notify.error(this.errMsg(e, 'Self-update', 'Update failed — nothing was changed'));
                 this.cdr.markForCheck();
             },
         });
@@ -1289,7 +1497,16 @@ export class VisitorsComponent implements OnInit, OnDestroy {
 
     loadLicMeta() {
         this.http.get<any>('/ees/licence/status').subscribe({
-            next: m => { this.licMeta = m; this.cdr.markForCheck(); },
+            next: m => {
+                this.licMeta = m;
+                // `visitors/live` answers 402 on the free tier; EventSource
+                // cannot read the status, so gate on the same tier here and
+                // show the unlock chip instead of a silent "reconnecting".
+                const locked = m?.tier === 'free';
+                if (locked && !this.liveLocked) { this.liveLocked = true; this.disconnectLive(); this.liveConnected = false; }
+                else if (!locked && this.liveLocked) { this.liveLocked = false; this.connectLive(); }
+                this.cdr.markForCheck();
+            },
             error: () => undefined,
         });
     }
@@ -1312,7 +1529,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
                 }
                 this.cdr.markForCheck();
             },
-            error: e => { this.buying = false; this.notify.error(e?.error?.message || 'Could not start checkout — try again shortly'); this.cdr.markForCheck(); },
+            error: e => { this.buying = false; this.notify.error(this.errMsg(e, 'Checkout', 'Could not start checkout — try again shortly')); this.cdr.markForCheck(); },
         });
     }
     checkClaim(force = false) {
@@ -1345,13 +1562,13 @@ export class VisitorsComponent implements OnInit, OnDestroy {
         if (l.trialEndsAt && new Date(l.trialEndsAt).getTime() > Date.now()) {
             return `free trial on the ${l.plan} plan — first charge on ${d(l.trialEndsAt)}; cancel any time before then via Manage billing`;
         }
-        return `${l.plan} subscription — renews automatically${l.expiresAt ? ' (current key valid until ' + d(l.expiresAt) + ')' : ''}`;
+        return `${l.plan} subscription — renews automatically${l.expiresAt ? ' — current key valid until ' + d(l.expiresAt) : ''}`;
     }
     openPortal() {
         this.portalOpening = true;
         this.http.post<any>('/ees/licence/portal-link', {}).subscribe({
             next: r => { this.portalOpening = false; if (r?.url) window.open(r.url, '_blank', 'noopener'); this.cdr.markForCheck(); },
-            error: e => { this.portalOpening = false; this.notify.error(e?.error?.message || 'Could not open the billing portal'); this.cdr.markForCheck(); },
+            error: e => { this.portalOpening = false; this.notify.error(this.errMsg(e, 'The billing portal', 'Could not open the billing portal')); this.cdr.markForCheck(); },
         });
     }
     buyLifetime() { this.buyPlan = 'lifetime'; this.buyLicence(); }
@@ -1370,7 +1587,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
             },
             error: e => {
                 this.licActivating = false;
-                this.notify.error(e?.error?.message || 'That key did not validate — check it was copied completely');
+                this.notify.error(this.errMsg(e, 'Activation', 'That key did not validate — check it was copied completely'));
                 this.cdr.markForCheck();
             },
         });
@@ -1381,6 +1598,8 @@ export class VisitorsComponent implements OnInit, OnDestroy {
         this.loadLicMeta();
         this.restorePrefs();
         this.loadChannels();
+        this.loadDigest();
+        this.loadSetup();
         this.loadAll();
         this.connectLive();
     }
@@ -1416,7 +1635,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
      *  are arriving from EventSource, so we hop back inside it before
      *  mutating state — otherwise the view won't refresh. */
     private connectLive(): void {
-        if (typeof EventSource === 'undefined') return;
+        if (typeof EventSource === 'undefined' || this.liveLocked || this.liveSource) return;
         try {
             this.liveSource = new EventSource('/ees/visitors/live' + (this.channelId != null ? `?channelId=${this.channelId}` : ''), { withCredentials: true } as any);
         } catch {
@@ -1491,6 +1710,7 @@ export class VisitorsComponent implements OnInit, OnDestroy {
     loadAll() {
         this.loading = true;
         this.loadAudience();
+        this.loadCarts();
         Promise.all([
             this.http.get<any>(`/ees/visitors/summary?${this.q()}`).toPromise(),
             this.http.get<any>(`/ees/visitors/funnel?${this.q()}`).toPromise(),
@@ -1505,9 +1725,9 @@ export class VisitorsComponent implements OnInit, OnDestroy {
             this.funnel = funnelRes?.stages || [];
             this.loading = false;
             this.cdr.markForCheck();
-        }).catch(() => {
+        }).catch((e: any) => {
             this.loading = false;
-            this.notify.error('Failed to load visitor data');
+            this.notify.error(this.errMsg(e, 'Loading visitor data', 'Failed to load visitor data'));
         });
     }
 
@@ -1563,9 +1783,9 @@ export class VisitorsComponent implements OnInit, OnDestroy {
             this.journey = j?.events || [];
             this.profileLoading = false;
             this.cdr.markForCheck();
-        }).catch(() => {
+        }).catch((e: any) => {
             this.profileLoading = false;
-            this.notify.error('Failed to load visitor profile');
+            this.notify.error(this.errMsg(e, 'The visitor profile', 'Failed to load visitor profile'));
         });
     }
 

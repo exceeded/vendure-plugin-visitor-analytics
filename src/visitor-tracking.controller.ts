@@ -13,6 +13,7 @@ import { ConversionGoal } from './conversion-goal.entity';
 import { VisitorAnalyticsPlugin, getOptions } from './plugin';
 import { VisitorEvent } from './visitor-event.entity';
 import { VisitorTrackingService } from './visitor-tracking.service';
+import { VisitorEngagementService } from './engagement.service';
 
 const COOKIE_VISITOR = 'ees_vid';
 const COOKIE_SESSION = 'ees_sid';
@@ -124,6 +125,7 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         private connection: TransactionalConnection,
         private tracking: VisitorTrackingService,
         private processContext: ProcessContext,
+        private engagement: VisitorEngagementService,
     ) {}
 
     onApplicationBootstrap(): void {
@@ -187,6 +189,12 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
         const licence = VisitorAnalyticsPlugin.getLicenceStatus();
         const ev = VisitorAnalyticsPlugin.getEvalState();
         const updater = VisitorAnalyticsPlugin.getUpdateChecker();
+        // Lifecycle notice, premium list and the "so far" figures for the
+        // banner — best effort, the banner renders without them.
+        let extras: { notice: any; premiumFeatures: string[]; recentStats: Array<{ label: string; value: string }> } =
+            { notice: null, premiumFeatures: [], recentStats: [] };
+        try { extras = await this.engagement.licenceExtras(); } catch { /* banner still renders */ }
+        const budget = freeTierBudget.snapshot();
         return res.json({
             licensed: !!licence?.valid,
             licence: describeLicence(licence),
@@ -196,7 +204,94 @@ export class VisitorTrackingController implements OnApplicationBootstrap, OnModu
             pkg: PLUGIN_ID_FOR_STORE,
             update: updater ? updater.getStatus() : null,
             selfUpdate: selfUpdateEnv(),
+            ...extras,
+            /** Free tier only: today's 100-event budget is spent, events are being skipped until midnight UTC. */
+            capReached: !VisitorAnalyticsPlugin.hasPremiumAccess() && budget.used >= budget.cap,
+            capUsed: budget.used,
+            cap: budget.cap,
         });
+    }
+
+    /** Trial lead: the admin asks to be emailed before the evaluation ends.
+     *  Proxied to the licence server; explicit consent only. The address is
+     *  also kept as the weekly report's fallback recipient. */
+    @Post('eval/remind-me')
+    async evalRemindMe(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (!requireAdmin(ctx, res, [Permission.UpdateSettings])) return;
+        const email = String(body?.email || '').trim().slice(0, 320);
+        const instanceId = VisitorAnalyticsPlugin.getEvalInstanceId();
+        if (!/^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/.test(email) || !instanceId) return res.status(400).json({ error: 'bad-request' });
+        try {
+            const base = (process.env.HULO_LICENCE_EVAL_URL || 'https://elite.charity/licence/eval/register').replace(/\/register$/, '');
+            const resp = await fetch(`${base}/lead`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ plugin: VisitorAnalyticsPlugin.getPackageName(), instanceId, email }),
+                signal: AbortSignal.timeout(8_000),
+            });
+            if (!resp.ok) return res.status(502).json({ error: 'upstream', status: resp.status });
+            await this.engagement.prefs.set('eval.leadEmail', email.toLowerCase());
+            return res.json({ ok: true });
+        } catch {
+            return res.status(502).json({ error: 'unreachable' });
+        }
+    }
+
+    // ── Set-up checklist, dashboard widget, weekly report ─────────────
+
+    /** Real checks (events arriving, URLs configured, a goal, alerts). */
+    @Get('setup')
+    async setup(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        return res.json(await this.engagement.setup());
+    }
+
+    /** Light payload for the admin dashboard widget (last 7 days). */
+    @Get('widget')
+    async widget(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        return res.json(await this.engagement.widget());
+    }
+
+    @Get('digest/settings')
+    async digestSettings(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        return res.json(await this.engagement.settings());
+    }
+
+    @Post('digest/settings')
+    async digestUpdate(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (!requireAdmin(ctx, res, [Permission.UpdateSettings])) return;
+        const patch: { enabled?: boolean; recipient?: string | null } = {};
+        if (typeof body?.enabled === 'boolean') patch.enabled = body.enabled;
+        if (body && 'recipient' in body) patch.recipient = body.recipient === null ? null : String(body.recipient || '');
+        try {
+            return res.json(await this.engagement.updateSettings(patch));
+        } catch (e: any) {
+            return res.status(400).json({ error: 'invalid', message: e?.message || 'Invalid settings' });
+        }
+    }
+
+    /** Send the week-to-date report now (to `to`, else the configured /
+     *  default recipient). Does not move the weekly clock. */
+    @Post('digest/send-test')
+    async digestSendTest(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (!requireAdmin(ctx, res, [Permission.UpdateSettings])) return;
+        const to = String(body?.to || '').trim().slice(0, 320) || null;
+        if (to && !/^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/.test(to)) {
+            return res.status(400).json({ sent: false, to, reason: 'Enter a valid email address', subject: '' });
+        }
+        return res.json(await this.engagement.sendTest(to));
+    }
+
+    /** This week's report as HTML, for the admin's "Preview" button. */
+    @Get('digest/preview')
+    async digestPreview(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (!requireAdmin(ctx, res)) return;
+        const mail = await this.engagement.preview();
+        res.setHeader('content-type', 'text/html; charset=utf-8');
+        res.setHeader('cache-control', 'no-store');
+        return res.send(mail.html);
     }
 
     /** One-click in-app update (owner-approved feature): installs a

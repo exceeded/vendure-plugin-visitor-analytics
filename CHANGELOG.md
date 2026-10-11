@@ -5,6 +5,59 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] — 2026-10-11
+
+Retention pass: a weekly report, a setup checklist, a dashboard widget and
+a licence banner that says what the plugin has done. No schema changes to
+the plugin's own tables; one shared `hulo_plugin_prefs` table (created on
+first boot by the licence SDK) holds the report settings.
+
+### Added
+- **Weekly report.** Every Monday at 08:00 server-local time the worker
+  emails the previous week's unique visitors, sessions, page views,
+  abandoned carts detected, carts recovered and their value, and
+  conversion goals completed — each against the week before — plus next
+  steps from the setup checklist and the licence notice when a trial or
+  key is ending. *Weekly report* card on the admin page (enabled toggle,
+  recipient with the resolved default as placeholder, last/next send,
+  *Send me a test*, *Preview*); `GET|POST /ees/digest/settings`,
+  `POST /ees/digest/send-test`, `GET /ees/digest/preview`. Sent through the
+  host's `SMTP_*` environment via `nodemailer`, now an optional peer
+  dependency. Default recipient: the licence holder, else the trial lead.
+- **Setup checklist** at the top of the admin page (`GET /ees/setup`):
+  tracking events arriving in the last 7 days, public base URL, storefront
+  URL for recovery links, a conversion goal, Slack alerts or recovery links.
+  Hidden once complete or dismissed; shown again if a ticked item regresses.
+  The undone items are the report's "next steps".
+- **Dashboard widget** (*Dashboard → Add widget → Visitor Analytics*):
+  unique visitors, page views and carts recovered for the last 7 days, the
+  licence notice, and a link to the page (`GET /ees/widget`).
+- **Admin navigation:** *Marketing → Visitor Analytics* (shared UI module
+  `VisitorsNavModule`, included in `uiExtensions`).
+- **Licence banner:** lifecycle notice (trial ending, key expiring,
+  evaluation ended) as an amber strip; the premium feature list and a
+  "So far: …" line of real 30-day figures on the trial and free banners;
+  *Email me before it ends* on the trial banner (`POST /ees/eval/remind-me`,
+  which was missing); "Renews automatically — current key valid until …"
+  on subscriptions.
+- **Value metrics:** *Recovered revenue* and *Carts recovered / abandoned*
+  tiles on the KPI row from `GET /ees/abandoned-carts/summary`.
+- **Free-tier cap:** `GET /ees/licence/status` reports `capReached`
+  (today's 100-event budget spent) and the page shows an amber notice; the
+  *Live now* tile shows an unlock chip on the free tier instead of a silent
+  "reconnecting".
+- **Usage counters** (`visitorsTracked`, `sessions`, `pageViews`,
+  `cartsAbandoned`, `cartsRecovered`, `recoveredValuePence`,
+  `goalsCompleted`, last 30 days, numbers only) now travel with both the
+  evaluation ping and the daily heartbeat, so licensed installs keep
+  reporting after purchase.
+- Any 402 / licence-coded error on the page renders "<what you tried> needs
+  a licence — start the free trial or activate a key at the top of this
+  page".
+
+### Changed
+- `@huloglobal/vendure-licence-sdk` `^0.15.0`.
+
 ## [0.18.5] — 2026-09-28
 
 ### Fixed

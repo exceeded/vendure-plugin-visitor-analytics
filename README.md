@@ -74,7 +74,9 @@ export const config: VendureConfig = {
 ```
 
 Add `VisitorAnalyticsPlugin.uiExtensions` to your `compileUiExtensions`
-config to pick up the Abandoned Carts + Analytics Insights admin pages.
+config to pick up the admin page (**Marketing → Visitor Analytics** in the
+nav, since 0.19.0), the licence/evaluation banner and the dashboard widget
+(**Dashboard → Add widget → Visitor Analytics**).
 
 
 > **Since 0.18.2:** events are pruned after 400 days by default
@@ -395,6 +397,54 @@ time-on-page, country, browser, OS.
 events with full enrichment, streamed in id order (up to 200 000 rows);
 `GET /ees/abandoned-carts/export.csv?days=N` streams up to 50 000 carts.
 
+### Weekly report, setup checklist and dashboard widget (since 0.19.0)
+
+**Weekly report.** Every Monday at 08:00 (server-local time) the worker
+emails a short "what Visitor Analytics did for you" report for the previous
+seven days: unique visitors, sessions, page views, abandoned carts detected,
+carts recovered and their value, conversion goals completed — each with the
+change against the week before — plus up to three next steps taken from the
+setup checklist, and the licence notice when a trial or key is about to end.
+Every figure comes from the same tables the admin page reads.
+
+- **Recipient.** The admin page's *Weekly report* card (just under the
+  licence card) has the enabled toggle and a recipient field. When the
+  field is empty the report goes to the licence holder's email, or to the
+  address given to *Email me before it ends* during the evaluation; the
+  placeholder shows which. *Send me a test* mails the week-to-date report
+  now; *Preview* opens it in a new tab. The same settings are available at
+  `GET|POST /ees/digest/settings` (`{ enabled?, recipient? }`),
+  `POST /ees/digest/send-test` (`{ to? }`) and `GET /ees/digest/preview`.
+- **Turning it off.** Untick *Enabled* (or `POST /ees/digest/settings`
+  `{ "enabled": false }`). Nothing is sent when no recipient can be
+  resolved.
+- **SMTP.** The plugin has no mailer of its own: it uses the host's
+  `SMTP_SERVER` (or `SMTP_HOST`), `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`
+  and `SMTP_FROM` environment variables through `nodemailer`, which is an
+  optional peer dependency — install it (`yarn add nodemailer`) to enable
+  the report. Without SMTP the card still works but *Send me a test*
+  reports why nothing went out; the rest of the plugin is unaffected.
+- **Multi-worker safe.** The send is claimed with a compare-and-set on a
+  shared `hulo_plugin_prefs` row, so several worker replicas send one
+  report, not one each.
+
+**Setup checklist.** The top of the admin page lists what still needs
+doing, from real checks: tracking events arriving in the last 7 days,
+`publicBaseUrl` pointing at a public host, a storefront URL for recovery
+links, at least one conversion goal, and Slack alerts or recovery links
+enabled. It disappears once everything is done, or when you hide it — and
+comes back if something it had ticked stops being true. `GET /ees/setup`
+returns the same items.
+
+**Dashboard widget.** *Dashboard → Add widget → Visitor Analytics* shows
+unique visitors, page views and carts recovered for the last 7 days, the
+licence notice when there is one, and a link to the full page
+(`GET /ees/widget`).
+
+**Usage counters.** The same 30-day numbers (no personal data) travel with
+the daily heartbeat and the evaluation ping so renewal and win-back emails
+from HULO can say what the plugin did for the store.
+
 ## HTTP endpoints
 
 **Public** (no auth — CORS-permissive for browser calls from any
@@ -433,6 +483,14 @@ Vendure admin session cookie):
 | `DELETE`| `/ees/goals/:id` | delete a goal |
 | `GET`  | `/ees/goals/stats` | per-goal completion stats |
 | `GET`  | `/ees/visitors/status` | version + update status |
+| `GET`  | `/ees/licence/status` | licence/evaluation state + lifecycle notice, premium list, 30-day figures, free-tier cap (0.19.0) |
+| `POST` | `/ees/eval/remind-me` | `{ email }` — email the admin before the evaluation ends (0.19.0, `UpdateSettings`) |
+| `GET`  | `/ees/setup` | setup checklist items (0.19.0) |
+| `GET`  | `/ees/widget` | dashboard widget payload, last 7 days (0.19.0) |
+| `GET`  | `/ees/digest/settings` | weekly report settings (0.19.0) |
+| `POST` | `/ees/digest/settings` | `{ enabled?, recipient? }` (0.19.0, `UpdateSettings`) |
+| `POST` | `/ees/digest/send-test` | `{ to? }` — send the week-to-date report now (0.19.0, `UpdateSettings`) |
+| `GET`  | `/ees/digest/preview` | this week's report as HTML (0.19.0) |
 | `GET`  | `/ees/abandoned-carts` | paginated list w/ filters (0.8.0) |
 | `GET`  | `/ees/abandoned-carts/summary` | totals + recovery rate (0.8.0) |
 | `GET`  | `/ees/abandoned-carts/:id` | detail incl. parsed items (0.8.0) |

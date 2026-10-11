@@ -17,6 +17,7 @@ import { RecommendationsController } from './recommendations.controller';
 import { SearchAnalyticsController } from './search-analytics.controller';
 import { JourneyBuffsController } from './journey-buffs.controller';
 import { StorefrontHelperController } from './storefront-helper.controller';
+import { VisitorEngagementService } from './engagement.service';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const PKG_VERSION: string = require('../package.json').version;
@@ -124,6 +125,7 @@ export function getOptions(): typeof DEFAULT_OPTIONS & VisitorAnalyticsPluginOpt
         SearchAnalyticsService,
         JourneyBuffsService,
         AbandonedCartScanner,
+        VisitorEngagementService,
     ],
     controllers: [
         VisitorTrackingController,
@@ -154,8 +156,19 @@ export class VisitorAnalyticsPlugin {
     static startEvaluation(): void {
         if (!VisitorAnalyticsPlugin.evalClientInternal) {
             VisitorAnalyticsPlugin.evalClientInternal = new EvaluationClient({ packageName: PKG_NAME, packageVersion: PKG_VERSION });
+            if (VisitorAnalyticsPlugin.statsProvider) VisitorAnalyticsPlugin.evalClientInternal.setStatsProvider(VisitorAnalyticsPlugin.statsProvider);
             VisitorAnalyticsPlugin.evalClientInternal.start();
         }
+    }
+
+    private static statsProvider: (() => Promise<Record<string, number>> | Record<string, number>) | null = null;
+    /** Anonymous 30-day usage counters (numbers only) for the evaluation
+     *  client and the heartbeat — licensed installs keep reporting after
+     *  purchase. Installed by `VisitorEngagementService` at bootstrap. */
+    static setStatsProvider(fn: () => Promise<Record<string, number>> | Record<string, number>): void {
+        VisitorAnalyticsPlugin.statsProvider = fn;
+        VisitorAnalyticsPlugin.evalClientInternal?.setStatsProvider(fn);
+        VisitorAnalyticsPlugin.heartbeat?.setStatsProvider(fn);
     }
 
     private static licenceHost = '';
@@ -276,6 +289,11 @@ export class VisitorAnalyticsPlugin {
                 route: 'visitors',
                 ngModuleFileName: 'visitors.module.ts',
                 ngModuleName: 'VisitorsModule',
+            },
+            {
+                type: 'shared' as const,
+                ngModuleFileName: 'visitors-nav.module.ts',
+                ngModuleName: 'VisitorsNavModule',
             },
         ],
     };
